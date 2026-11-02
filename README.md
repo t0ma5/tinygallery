@@ -4,7 +4,7 @@ A small, fast photo gallery for **one photographer**, running entirely on Cloudf
 Pages for the site, Pages Functions for the API, **D1** for the database and **R2** for the photos.
 No framework, no build step, no npm dependencies: about 2,400 lines of plain JavaScript, HTML and CSS.
 
-Minimal dark design in the spirit of Pixieset: full-screen covers, a masonry grid, a clean photo viewer,
+Minimal dark design: full-screen covers, a masonry grid, a clean photo viewer,
 easy downloads, and private links for clients.
 
 **Live demo:** <https://tinygallery.pages.dev/>
@@ -222,7 +222,7 @@ Download names come from the database, so they survive copies that drop R2 metad
   `HttpOnly`, `Secure`, `SameSite=Strict` cookie valid for 30 days. The signing key is derived from the password,
   so **changing the password logs out every session**. 10 failed logins per IP lock that IP out for 15 minutes.
 - **CSRF:** admin writes require a custom `x-admin` header that cross-site forms cannot send, on top of `SameSite`.
-- **Private folders are link-only**, like Pixieset: anyone who has the link can open it and forward it.
+- **Private folders are link-only**: anyone who has the link can open it and forward it.
   Tokens are 12 random base62 characters (about 71 bits). Use **New link** to revoke.
   Folder pages send `X-Robots-Tag: noindex` and `Referrer-Policy: no-referrer`.
 - **Photo files** live under 20-character random keys, so they cannot be enumerated.
@@ -272,10 +272,15 @@ tinygallery/
 - Font: [Montserrat](https://github.com/JulietaUla/Montserrat) by Julieta Ulanovsky and contributors,
   [SIL Open Font License](public/fonts/OFL.txt), via Fontsource.
 - Demo photos from [Unsplash](https://unsplash.com/license) via [Lorem Picsum](https://picsum.photos), by
-  Alan Haverty, Aleks Dorohovich, Alejandro Escamilla, Anton Sulsky, Bartosz Bąk, Ben Moore, Charlie Foster,
-  Christopher Sardegna, Dorothy Lin, Go Wild, How-Soon Ngu, Jon Eckert, Justin Leibow, Kristian Karlsson,
-  Nicholas Swanson, Pawel Kadysz, Rula Sibai, Ryan Mcguire, Shane Colella, Sonja Langford, Vadim Sherbakov,
-  Zugr and Zwaddi. The photos are not part of this repository.
+  Afroz Nawaf, Alan Haverty, Alejandro Escamilla, Aleks Dorohovich, Ales Krivec, Anton Sulsky, Artur Pokusin,
+  Bartosz Bąk, Ben Moore, Bonnie Meisels, Brooklyn Morgan, Carli Jean, Charlie Foster, Christopher Sardegna,
+  Daniel Robert, Dogancan Ozturan, Dominik Martin, Dorothee Hübner, Dorothy Lin, Forrest Cavale, Glen Carrie,
+  Go Wild, Griffin Keller, How-Soon Ngu, Jeff Sheldon, John French, Jon Eckert, Jonas Lavoie-Levesque,
+  Juskteez Vu, Justin Leibow, Kelley Bozarth, Kristian Karlsson, Lou Levit, Louis Pellissier, Lucas Löf,
+  Marta Pawlik, Martin Staněk, Milada Vigerova, Nathalie Gouzée, Nicholas Swanson, Oisin Conolly, Pawel Kadysz,
+  Philipp Henzler, Piotr Kwiatkowski, POR7O, RayBay, Rula Sibai, Ruxandra Mateiu, Ryan Mcguire,
+  Sebastian Kostrubala, Sebastien Gabriel, Shane Colella, Sonja Langford, Thomas Lefebvre, Tirza van Dijk,
+  Topich, Vadim Sherbakov, Wellington Sanipe, Zugr and Zwaddi. The photos are not part of this repository.
 
 ## License
 
