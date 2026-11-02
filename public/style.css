@@ -190,6 +190,48 @@ button {
 
 .btn-outline:hover { background: #fff; color: var(--bg); }
 
+/* Way back from an album: top corner of the cover, and the arrow before the title in the sticky header. */
+.cover-back {
+	position: absolute;
+	top: 24px;
+	left: 20px;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 4px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .3em;
+	text-transform: uppercase;
+	opacity: .85;
+	transition: opacity .2s;
+}
+
+.cover-back:hover { opacity: 1; }
+.cover-back { text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.cover-back svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .6)); }
+.cover-back svg { width: 16px; height: 16px; }
+
+.header-back {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+	height: 40px;
+}
+
+.header-back svg {
+	flex: none;
+	width: 18px;
+	height: 18px;
+	margin-left: -4px;
+	opacity: .75;
+	transition: opacity .2s;
+}
+
+.header-back:hover svg { opacity: 1; }
+
 /* Masonry grid */
 
 .grid {
@@ -780,6 +822,7 @@ select.field { appearance: auto; }
 @media (max-width: 700px) {
 	:root { --gap: 6px; --header: 56px; --stage-pad: 16px; }
 	.header { padding: 0 8px 0 16px; }
+	.cover-back { top: 14px; left: 10px; }
 	.grid { padding: 0 6px; }
 	.albums { padding-left: 16px; padding-right: 16px; gap: 40px; }
 	.collection { padding-top: 48px; }

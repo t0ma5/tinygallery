@@ -9,7 +9,6 @@ const ICON = {
 	close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 	prev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.1"><path d="M15 4l-8 8 8 8"/></svg>',
 	next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.1"><path d="M9 4l8 8-8 8"/></svg>',
-	back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
 	share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 15V4m0 0L8 8m4-4l4 4M6 11H5v9h14v-9h-1"/></svg>',
 };
 
@@ -85,10 +84,12 @@ function renderNotFound() {
 }
 
 // Full-screen cover: optional title in the middle, the photographer's name at the bottom.
-function coverHtml(key, title = '', sub = '', button = true) {
+// back: where "All albums" in the top corner leads (album pages only).
+function coverHtml(key, title = '', sub = '', button = true, back = '') {
 	return `
 		<section class="cover">
 			${key ? `<img src="${img(key, 'd')}" alt="">` : ''}
+			${back ? `<a class="cover-back" href="${back}">${ICON.prev}<span>All albums</span></a>` : ''}
 			<div class="cover-center">
 				${title ? `<h1>${esc(title)}</h1>` : ''}
 				${sub ? `<p>${esc(sub)}</p>` : ''}
@@ -124,10 +125,9 @@ function renderAlbum(data) {
 	document.title = `${album.title} · ${photographer}`;
 
 	app.innerHTML = `
-		${coverHtml(album.cover, album.title, formatDate(album.date), photos.length > 0)}
+		${coverHtml(album.cover, album.title, formatDate(album.date), photos.length > 0, back)}
 		<header class="header" id="gallery">
-			<a href="${back}"><span class="brand-title">${esc(album.title)}</span></a>
-			<a class="icon-btn" href="${back}" title="All albums">${ICON.back}</a>
+			<a class="header-back" href="${back}" title="All albums">${ICON.prev}<span class="brand-title">${esc(album.title)}</span></a>
 		</header>
 		<main class="grid" id="grid"></main>
 		${footer()}
