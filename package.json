@@ -1,0 +1,10 @@
+{
+  "name": "tinygallery",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler pages dev public --port 8788 --ip 127.0.0.1",
+    "test": "node scripts/test.mjs",
+    "setup": "node scripts/setup.mjs"
+  }
+}

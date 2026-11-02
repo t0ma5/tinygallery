@@ -2,7 +2,7 @@
 
 A small, fast photo gallery for **one photographer**, running entirely on Cloudflare's free tier:
 Pages for the site, Pages Functions for the API, **D1** for the database and **R2** for the photos.
-No framework, no build step, no npm dependencies: about 3,300 lines of plain JavaScript, HTML and CSS.
+No framework, no build step, nothing to install: about 4,700 lines of plain JavaScript, HTML and CSS, plus two small vendored libraries for QR codes and ZIP files.
 
 Minimal dark design: full-screen covers, a masonry grid, a clean photo viewer,
 easy downloads, and private album links you can share with anyone.
@@ -55,8 +55,12 @@ easy downloads, and private album links you can share with anyone.
 - Photo viewer with keyboard arrows, swipe, **pinch / double-tap / wheel zoom** and drag to pan.
   Past the display resolution it quietly loads the original, so zoomed detail stays sharp.
 - **Download** the original with its original file name, from the grid (hover) or the viewer.
-- **Slideshow** button in the viewer: full screen, a new photo every 5 seconds, loops forever and keeps the
-  screen awake, so a TV or laptop can show an album at a party or wedding. Tap, click, Esc or Space stops it.
+- **Slideshow** button in the viewer: full screen, loops forever and keeps the screen awake, so a TV or laptop
+  can show an album at a party or wedding. While it plays: **3, 5 or 10 seconds** per photo, **Shuffle** (every
+  photo once before repeating) and a **QR code** in the corner so guests can open the album on their phones.
+  A tap shows the controls, a second tap, Esc or Space stops it. The choices are remembered in that browser.
+- **Download all** as one ZIP of the originals (or only the favourites while that filter is on), made in the
+  browser. Chrome and Edge on a computer write it straight to disk; elsewhere it is built in memory first.
 - **Share** button: the device's own share sheet (phones, Safari, Chrome, Edge), copy-link fallback elsewhere.
 - **Link previews** (WhatsApp, Messenger, Slack, ...) with title, description and cover photo.
 - Big albums load 100 photos at a time as you scroll.
@@ -71,13 +75,19 @@ easy downloads, and private album links you can share with anyone.
 - One admin account, one password (a Cloudflare secret). No sign-ups, no user management.
 - Albums with title and date, shown on the **home page**, **hidden**, or inside a **private folder**.
 - **Drag to reorder** albums and photos (mouse or touch), and **Sort by date taken** (read from EXIF at upload).
-- Drag-and-drop upload of many photos at once. The browser makes the display (2400 px) and thumbnail (900 px)
-  copies, the original is kept for download.
+- Drag-and-drop upload of many photos at once, **3 at a time**, kept in the order chosen. The browser makes the
+  display (2400 px) and thumbnail (900 px) copies, the original is kept for download.
+- **No duplicates:** the same file is never added twice to one album (SHA-256 fingerprint checked in the browser
+  and on the server). Photos uploaded before fingerprints existed are matched by file name and size.
+- Optional **watermark** text on the display copies of new uploads (thumbnails and originals stay clean).
+- **Select photos** in the album editor to **move** them to another album or **delete** many at once.
+- **Trash:** deleted photos and albums stay **7 days** and can be restored, then they are removed for good.
 - **Remove GPS location** from originals before upload (on by default): blanks the location in EXIF and XMP,
   keeps the date and everything else.
 - **Private folders** to share with clients, friends or family: an unguessable link (`/f/<12 random characters>`), collapsible list,
-  **New link** to revoke, optional **password**, **link expiry date**, and the **favourites** people picked
-  (thumbnails, who picked them, and **Copy file names** for your editing software).
+  **New link** to revoke, optional **password**, **link expiry date**, a **QR code** (PNG to save or print),
+  **when it was last opened**, and the **favourites** people picked (thumbnails, who picked them, and
+  **Copy file names** for your editing software).
 - **Downloads switch** per album and per folder (on by default). Off hides the buttons and stops serving
   originals, so zoom stays at the display resolution.
 - **Views and downloads** per album, views and favourites per folder (your own visits are not counted).
@@ -87,6 +97,7 @@ easy downloads, and private album links you can share with anyone.
 - Search for albums and folders (ignores accents: "seinajoki" finds "Seinäjoki").
 - Site name setting, storage used (with on-demand recount) and photo count. A recount also removes files left by
   uploads that never finished (closed tab, lost connection) once they are a day old.
+- **Log out on all devices**, for a lost phone or laptop.
 
 ---
 
@@ -211,12 +222,16 @@ To remove the GitHub icon from the footer, delete the `REPO_URL` line in `wrangl
 Pull the new code, apply any new file in `migrations/` once, then deploy:
 
 ```bash
-npx wrangler d1 execute <database> --remote --file migrations/0002_features.sql
+npx wrangler d1 execute <database> --remote --file migrations/0003_counts_trash.sql
 npx wrangler pages deploy --project-name <name> --branch main
 ```
 
-`0002_features.sql` adds ordering, favourites, folder passwords, expiry, view and download counts and the
-download switches to installs created before them.
+- `0002_features.sql` adds ordering, favourites, folder passwords, expiry, view and download counts and the
+  download switches.
+- `0003_counts_trash.sql` adds stored photo counts (so pages no longer read every photo row, which used up the
+  free plan's daily database reads on big galleries), the trash, "last opened" for folders and duplicate detection.
+
+Apply them in order, each once. Back up first: `npx wrangler d1 export <database> --remote --output backup.sql`.
 
 ---
 
@@ -230,6 +245,10 @@ npx wrangler pages dev public
 
 Wrangler simulates D1 and R2 on your machine (`.wrangler/`), so local uploads never touch Cloudflare.
 `.dev.vars` and `.wrangler/` are git-ignored.
+
+**Tests:** with the local server running, `npm test` runs about 40 checks of the API: access rules, passwords,
+expiry, downloads switch, favourites, uploads and duplicates, move, trash and restore, sessions. It refuses to run
+against anything but `127.0.0.1` or `localhost` and removes only what it created.
 
 ---
 
@@ -247,11 +266,16 @@ Originals take most of the space: a 24 MP JPEG is about 8 to 12 MB, so roughly 1
 The edge cache keeps repeat views from reading R2 again.
 
 **Pages Functions** (free plan): **100,000 requests a day** and 10 ms CPU per request. Every photo shown is one
-function request, so the free plan handles roughly 3,000 album views a day. Over the limit, requests fail until
-the next day (nothing is billed). Workers Paid ($5/month) raises it to 10 million a month. For very busy sites,
-serving photos straight from R2 on a custom domain avoids function requests for images.
+function request (thumbnails, full photos, downloads), so the free plan handles roughly 1,100 visitors a day who
+each scroll through an album and open ten photos (about 90 requests each). Returning visitors cost little: photos
+stay in the browser cache for a year. Over the limit, every page and photo fails until 00:00 UTC (nothing is
+billed). The limit is per Cloudflare account, shared by all sites on it. Workers Paid ($5/month) gives 10 million
+requests a month with no daily cutoff. For very busy sites, serving photos straight from R2 on a custom domain
+avoids function requests for images.
 
-**D1** free limits (5 GB, millions of reads a day) are far beyond what a gallery uses.
+**D1** free limits: 5 GB, 5 million rows read and 100,000 rows written a day. Photo counts are stored on each
+album, so a page reads about one row per album plus the photos of the album shown; each album or folder view
+writes one row (its view counter).
 
 ---
 
@@ -302,10 +326,11 @@ Download names come from the database, so they survive copies that drop R2 metad
 
 - **HEIC** (iPhone) photos upload only from Safari; other browsers cannot decode them. Export as JPEG first.
 - One admin, no roles, no visitor accounts. Favourites live in one browser: someone who switches phones starts over.
-- No ZIP download of a whole album.
+- **Download all** on phones builds the ZIP in memory: very large albums can fail there (download in parts with the
+  favourites filter, or use a computer).
 - **Sort by date taken** works for JPEGs uploaded with this version or later (older uploads have no stored date).
 - **Remove GPS location** covers JPEG; PNG and WebP rarely carry location and are uploaded unchanged.
-- Interrupted uploads can leave a few orphan files in R2 (they never appear in an album).
+- Pages Functions have no scheduled jobs, so the trash is emptied of old items when the admin page is opened.
 - Storage used is counted on demand (Recount), not live.
 
 ---
@@ -317,7 +342,9 @@ tinygallery/
 ├── wrangler.toml          Pages config: project name, D1 and R2 bindings, site name, footer link
 ├── schema.sql             D1 tables for a new install
 ├── migrations/            schema upgrades for existing installs
+├── package.json           npm run dev / npm test / npm run setup
 ├── scripts/setup.mjs      one-command setup on Cloudflare
+├── scripts/test.mjs       API checks against the local server
 ├── functions/
 │   ├── api/[[path]].js    JSON API (public + admin)
 │   ├── img/[[path]].js    photo files from R2, edge-cached, downloads
@@ -327,12 +354,14 @@ tinygallery/
 ├── lib/
 │   ├── data.js            page data and access rules (folders, passwords, expiry, downloads)
 │   ├── og.js              Open Graph tags
+│   ├── trash.js           trash: delete, restore, purge after 7 days
 │   └── util.js            sessions, folder passwords, tokens, JSON helpers
 └── public/
     ├── index.html, app.js     public pages
     ├── admin.html, admin.js   admin panel
     ├── style.css
     ├── fonts/                 Montserrat (SIL OFL)
+    ├── vendor/                qrcode-generator (QR codes), client-zip (ZIP files), both MIT
     ├── _headers, robots.txt
 ```
 
@@ -342,6 +371,8 @@ tinygallery/
 
 - Font: [Montserrat](https://github.com/JulietaUla/Montserrat) by Julieta Ulanovsky and contributors,
   [SIL Open Font License](public/fonts/OFL.txt), via Fontsource.
+- QR codes: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) by Kazuhiko Arase, MIT.
+  ZIP files: [client-zip](https://github.com/Touffy/client-zip) by David Junger, MIT.
 - Demo photos from [Unsplash](https://unsplash.com/license) via [Lorem Picsum](https://picsum.photos), by
   Afroz Nawaf, Alan Haverty, Alejandro Escamilla, Aleks Dorohovich, Ales Krivec, Anton Sulsky, Artur Pokusin,
   Bartosz Bąk, Ben Moore, Bonnie Meisels, Brooklyn Morgan, Carli Jean, Charlie Foster, Christopher Sardegna,

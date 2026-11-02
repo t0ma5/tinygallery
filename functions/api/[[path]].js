@@ -5,6 +5,7 @@ import {
 } from '../../lib/util.js';
 
 import { homeData, homeCoverPhotos, folderData, albumData, openFolder, siteName, ALBUM_SQL, ALBUM_ORDER } from '../../lib/data.js';
+import { TRASH_DAYS, trashPhotoStatements, trashAlbumStatements, runBatches, selectIn, restore, purge, trashKeys } from '../../lib/trash.js';
 
 const MB = 1024 * 1024;
 const MAX_FAVORITES = 20000; // per folder, from all visitors together
@@ -12,7 +13,7 @@ const MAX_FAVORITES = 20000; // per folder, from all visitors together
 export async function onRequest({ request, env, params, waitUntil }) {
 	const path = (params.path || []).join('/');
 	try {
-		if (path.startsWith('admin/')) return await admin(path.slice(6), request, env);
+		if (path.startsWith('admin/')) return await admin(path.slice(6), request, env, waitUntil);
 
 		let m = path.match(/^f\/([A-Za-z0-9]{12})\/(unlock|favorites)$/);
 		if (m && m[2] === 'unlock' && request.method === 'POST') return await unlockFolder(request, env, m[1]);
@@ -23,7 +24,9 @@ export async function onRequest({ request, env, params, waitUntil }) {
 		m = path.match(/^f\/([A-Za-z0-9]{12})$/);
 		if (m) {
 			const data = await folderData(env, request, m[1]);
-			if (data && !data.locked && !data.expired) count(waitUntil, request, env, 'UPDATE folders SET views = views + 1 WHERE token = ?', m[1]);
+			if (data && !data.locked && !data.expired) {
+				count(waitUntil, request, env, [['UPDATE folders SET views = views + 1, last_viewed_at = CURRENT_TIMESTAMP WHERE token = ?', m[1]]]);
+			}
 			return page(data);
 		}
 		m = path.match(/^album\/([a-z0-9-]{1,80})$/);
@@ -31,7 +34,10 @@ export async function onRequest({ request, env, params, waitUntil }) {
 			const token = new URL(request.url).searchParams.get('f');
 			let data = await albumData(env, request, m[1], token);
 			if (data && !data.locked && !data.expired) {
-				count(waitUntil, request, env, 'UPDATE albums SET views = views + 1 WHERE slug = ?', m[1]);
+				const counts = [['UPDATE albums SET views = views + 1 WHERE slug = ?', m[1]]];
+				// An album opened straight from a folder link also counts as opening the folder.
+				if (data.back !== '/') counts.push(['UPDATE folders SET last_viewed_at = CURRENT_TIMESTAMP WHERE token = ?', token]);
+				count(waitUntil, request, env, counts);
 			} else if (!data) {
 				// The admin may preview hidden and folder albums without a link.
 				data = await albumData(env, request, m[1], token, await isAdmin(request, env));
@@ -53,11 +59,12 @@ function page(data) {
 	return json(data);
 }
 
-// View counters, updated after the response; the admin's own visits do not count.
-function count(waitUntil, request, env, sql, value) {
+// View counters and "last opened", updated after the response; the admin's own visits do not count.
+// updates: [[sql, value], ...]
+function count(waitUntil, request, env, updates) {
 	waitUntil((async () => {
 		if (/(?:^|;\s*)session=/.test(request.headers.get('cookie') || '') && (await isAdmin(request, env))) return;
-		await env.DB.prepare(sql).bind(value).run();
+		await env.DB.batch(updates.map(([sql, value]) => env.DB.prepare(sql).bind(value)));
 	})());
 }
 
@@ -121,7 +128,7 @@ async function favorites(request, env, token) {
 
 /* Admin */
 
-async function admin(path, request, env) {
+async function admin(path, request, env, waitUntil) {
 	const method = request.method;
 	if (path === 'login' && method === 'POST') return login(request, env);
 	if (path === 'logout' && method === 'POST') return json({ ok: true }, 200, { 'set-cookie': clearCookie });
@@ -134,7 +141,11 @@ async function admin(path, request, env) {
 
 	if (res === 'upload' && method === 'PUT') return putFile(request, env, rawId, sub);
 
-	if (res === 'state' && method === 'GET') return state(env);
+	if (res === 'state' && method === 'GET') {
+		// The admin page loading is the moment to clear trash older than 7 days (no scheduled jobs on Pages).
+		waitUntil(purge(env).catch(e => console.error(e)));
+		return state(env);
+	}
 	// Up to 5 home cover photos; the home page shows one of them at random on each visit.
 	if (res === 'home-covers' && method === 'PUT') {
 		const { ids } = await request.json();
@@ -162,6 +173,26 @@ async function admin(path, request, env) {
 		await setSetting(env, 'strip_gps', on ? '1' : '0');
 		return json({ ok: true });
 	}
+	// Text drawn on display copies of new uploads; empty turns it off. Drawn in the browser like the resizing.
+	if (res === 'watermark' && method === 'PUT') {
+		const { text } = await request.json();
+		const value = typeof text === 'string' ? text.trim() : '';
+		if (value.length > 60) return fail('Watermark text must be at most 60 characters');
+		await setSetting(env, 'watermark', value);
+		return json({ ok: true });
+	}
+
+	if (res === 'trash') {
+		if (id && sub === 'restore' && method === 'POST') {
+			const error = await restore(env, id);
+			return error ? fail(error, 409) : json({ ok: true });
+		}
+		if (id && !sub && method === 'DELETE') return json({ removed: await purge(env, { ids: [id] }) });
+		if (!rawId && method === 'DELETE') {
+			const { results } = await env.DB.prepare('SELECT id FROM trash').all();
+			return json({ removed: results.length ? await purge(env, { ids: results.map(r => r.id) }) : 0 });
+		}
+	}
 
 	if (res === 'albums') {
 		if (rawId === 'order' && method === 'PUT') return setOrder(request, env, 'albums', null);
@@ -170,10 +201,11 @@ async function admin(path, request, env) {
 		if (id && !sub && method === 'PATCH') return updateAlbum(request, env, id);
 		if (id && !sub && method === 'DELETE') return deleteAlbum(env, id);
 		if (id && sub === 'order' && method === 'PUT') return setOrder(request, env, 'photos', id);
-		if (id && sub === 'photos' && !extra && method === 'POST') return startUpload(env, id);
+		if (id && sub === 'photos' && !extra && method === 'POST') return startUpload(request, env, id);
 		if (id && sub === 'photos' && extra && method === 'POST') return finishUpload(request, env, id, extra);
 	}
-	if (res === 'photos' && id && method === 'DELETE') return deletePhoto(env, id);
+	if (res === 'photos' && rawId === 'delete' && method === 'POST') return deletePhotos(request, env);
+	if (res === 'photos' && rawId === 'move' && method === 'POST') return movePhotos(request, env);
 
 	if (res === 'folders') {
 		if (!id && method === 'POST') return createFolder(request, env);
@@ -202,9 +234,9 @@ async function login(request, env) {
 }
 
 async function state(env) {
-	const [folders, albums, picks, settings, photoCount] = await Promise.all([
+	const [folders, albums, picks, settings, photoCount, trash] = await Promise.all([
 		// Never send password hashes to the browser, only whether one is set.
-		env.DB.prepare(`SELECT f.id, f.token, f.title, f.cover_photo_id, f.expires_at, f.downloads_off, f.views,
+		env.DB.prepare(`SELECT f.id, f.token, f.title, f.cover_photo_id, f.expires_at, f.downloads_off, f.views, f.last_viewed_at,
 				f.password_hash IS NOT NULL AS has_password,
 				(SELECT COUNT(DISTINCT photo_id) FROM favorites v WHERE v.folder_id = f.id) AS favorites
 			FROM folders f ORDER BY f.id DESC`).all(),
@@ -213,8 +245,11 @@ async function state(env) {
 		env.DB.prepare(`SELECT id, key, album_id FROM (
 			SELECT id, key, album_id, ROW_NUMBER() OVER (PARTITION BY album_id ORDER BY sort, id) AS rn FROM photos
 		) WHERE rn <= 12`).all(),
-		env.DB.prepare(`SELECT key, value FROM settings WHERE key IN ('storage', 'strip_gps')`).all(),
-		env.DB.prepare('SELECT COUNT(*) AS n FROM photos').first(),
+		env.DB.prepare(`SELECT key, value FROM settings WHERE key IN ('storage', 'strip_gps', 'watermark')`).all(),
+		env.DB.prepare('SELECT COALESCE(SUM(photo_count), 0) AS n FROM albums').first(),
+		// Newest first, with the first photo for a thumbnail and the number of photos (not the whole rows).
+		env.DB.prepare(`SELECT id, kind, title, deleted_at, json_extract(keys, '$[0]') AS key, json_array_length(keys) AS photos
+			FROM trash ORDER BY deleted_at DESC, id DESC`).all(),
 	]);
 	const setting = k => settings.results.find(r => r.key === k)?.value;
 	// Grouped once, so big galleries stay inside the CPU limit.
@@ -231,6 +266,9 @@ async function state(env) {
 		homeCovers: await homeCoverPhotos(env),
 		// On unless the admin turned it off.
 		stripGps: setting('strip_gps') !== '0',
+		watermark: setting('watermark') || '',
+		trash: trash.results,
+		trashDays: TRASH_DAYS,
 		folders: folders.results,
 		albums: albums.results.map(a => ({
 			...a,
@@ -244,7 +282,7 @@ async function state(env) {
 // is not in the database and that are over a day old, so uploads running right now are left alone.
 async function recountStorage(env) {
 	const { results } = await env.DB.prepare('SELECT key FROM photos').all();
-	const known = new Set(results.map(r => r.key));
+	const known = new Set([...results.map(r => r.key), ...(await trashKeys(env))]);
 	const dayAgo = Date.now() - 86400 * 1000;
 	let bytes = 0;
 	const orphans = [];
@@ -309,7 +347,7 @@ async function getAlbum(env, id) {
 	const a = await env.DB.prepare(`${ALBUM_SQL} WHERE a.id = ?`).bind(id).first();
 	if (!a) return notFound();
 	const { results } = await env.DB.prepare(
-		'SELECT id, key, name, w, h, taken_at FROM photos WHERE album_id = ? ORDER BY sort, id').bind(id).all();
+		'SELECT id, key, name, w, h, taken_at, hash FROM photos WHERE album_id = ? ORDER BY sort, id').bind(id).all();
 	return json({ album: a, photos: results });
 }
 
@@ -348,16 +386,47 @@ async function updateAlbum(request, env, id) {
 
 const filesOf = key => [`${key}/t`, `${key}/d`, `${key}/o`];
 
+// Deleted albums go to the trash with their photos; files are removed only when the trash is purged.
 async function deleteAlbum(env, id) {
-	const { results } = await env.DB.prepare('SELECT key FROM photos WHERE album_id = ?').bind(id).all();
-	const files = results.flatMap(p => filesOf(p.key));
-	for (let i = 0; i < files.length; i += 900) await env.PHOTOS.delete(files.slice(i, i + 900));
-	await env.DB.batch([
-		env.DB.prepare('DELETE FROM favorites WHERE photo_id IN (SELECT id FROM photos WHERE album_id = ?)').bind(id),
-		env.DB.prepare('DELETE FROM photos WHERE album_id = ?').bind(id),
-		env.DB.prepare('DELETE FROM albums WHERE id = ?').bind(id),
-	]);
+	const statements = await trashAlbumStatements(env, id);
+	if (!statements) return notFound();
+	await env.DB.batch(statements);
 	return json({ ok: true });
+}
+
+// POST { ids }: photos to the trash, one item each (from the album editor, one or many at a time).
+async function deletePhotos(request, env) {
+	const ids = await photoIds(request);
+	if (!ids) return fail('Send photo ids');
+	const photos = await selectIn(env, 'SELECT * FROM photos WHERE id IN', ids);
+	if (!photos.length) return notFound();
+	const albums = await selectIn(env, 'SELECT id, slug, title FROM albums WHERE id IN', [...new Set(photos.map(p => p.album_id))]);
+	await runBatches(env, trashPhotoStatements(env, photos, new Map(albums.map(a => [a.id, a]))));
+	return json({ deleted: photos.length });
+}
+
+// POST { ids, album_id }: photos to another album, at its end, in the order given.
+// Covers that pointed at them are cleared, and favourites go when the photos leave their folder.
+async function movePhotos(request, env) {
+	const body = await request.clone().json();
+	const ids = await photoIds(request);
+	const target = await env.DB.prepare('SELECT id, folder_id FROM albums WHERE id = ?').bind(Number(body.album_id)).first();
+	if (!ids || !target) return fail('Choose photos and an album');
+	const { n } = await env.DB.prepare('SELECT COALESCE(MAX(sort), 0) AS n FROM photos WHERE album_id = ?').bind(target.id).first();
+	const statements = ids.flatMap((pid, i) => [
+		env.DB.prepare('UPDATE albums SET cover_photo_id = NULL WHERE cover_photo_id = ? AND id != ?').bind(pid, target.id),
+		env.DB.prepare('DELETE FROM favorites WHERE photo_id = ? AND folder_id IS NOT ?').bind(pid, target.folder_id),
+		env.DB.prepare('UPDATE photos SET album_id = ?, sort = ? WHERE id = ?').bind(target.id, n + i + 1, pid),
+	]);
+	await runBatches(env, statements, 99);
+	return json({ moved: ids.length });
+}
+
+async function photoIds(request) {
+	const { ids } = await request.json().catch(() => ({}));
+	if (!Array.isArray(ids) || !ids.length || ids.length > 2000) return null;
+	const clean = [...new Set(ids.map(Number).filter(n => Number.isInteger(n) && n > 0))];
+	return clean.length ? clean : null;
 }
 
 // Uploads go in three steps, so the function never reads the file bytes and stays far below the CPU limit:
@@ -367,8 +436,16 @@ async function deleteAlbum(env, id) {
 
 const MAX_SIZE = { t: 4 * MB, d: 15 * MB, o: 80 * MB };
 
-async function startUpload(env, albumId) {
+// SHA-256 of the chosen file, in hex, made in the browser.
+const cleanHash = v => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null);
+
+// POST { hash }: the same file already in this album is refused before anything is uploaded.
+async function startUpload(request, env, albumId) {
 	if (!(await env.DB.prepare('SELECT 1 FROM albums WHERE id = ?').bind(albumId).first())) return notFound();
+	const hash = cleanHash((await request.json().catch(() => ({}))).hash);
+	if (hash && (await env.DB.prepare('SELECT 1 FROM photos WHERE album_id = ? AND hash = ?').bind(albumId, hash).first())) {
+		return json({ duplicate: true }, 409);
+	}
 	return json({ key: randomToken(20) });
 }
 
@@ -394,30 +471,18 @@ async function putFile(request, env, key, size) {
 async function finishUpload(request, env, albumId, key) {
 	if (!/^[A-Za-z0-9]{20}$/.test(key)) return notFound();
 	if (!(await env.DB.prepare('SELECT 1 FROM albums WHERE id = ?').bind(albumId).first())) return notFound();
-	const { w, h, taken_at } = await request.json();
+	const { w, h, taken_at, hash } = await request.json();
 	if (!(w > 0 && h > 0)) return fail('Missing size');
 	const heads = await Promise.all(filesOf(key).map(f => env.PHOTOS.head(f)));
 	if (heads.some(x => !x)) return fail('Upload incomplete, try again');
 
 	const name = heads[2].customMetadata?.name || 'photo.jpg';
 	const taken = typeof taken_at === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(taken_at) ? taken_at : null;
-	const r = await env.DB.prepare(`INSERT INTO photos (album_id, key, name, w, h, taken_at, sort)
-		VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM photos WHERE album_id = ?))`)
-		.bind(albumId, key, name, Math.round(w), Math.round(h), taken, albumId).run();
-	return json({ id: r.meta.last_row_id, key, name, w, h, taken_at: taken });
-}
-
-async function deletePhoto(env, id) {
-	const p = await env.DB.prepare('SELECT key FROM photos WHERE id = ?').bind(id).first();
-	if (!p) return notFound();
-	await env.PHOTOS.delete(filesOf(p.key));
-	await env.DB.batch([
-		env.DB.prepare('DELETE FROM favorites WHERE photo_id = ?').bind(id),
-		env.DB.prepare('DELETE FROM photos WHERE id = ?').bind(id),
-		env.DB.prepare('UPDATE albums SET cover_photo_id = NULL WHERE cover_photo_id = ?').bind(id),
-		env.DB.prepare('UPDATE folders SET cover_photo_id = NULL WHERE cover_photo_id = ?').bind(id),
-	]);
-	return json({ ok: true });
+	const digest = cleanHash(hash);
+	const r = await env.DB.prepare(`INSERT INTO photos (album_id, key, name, w, h, taken_at, hash, sort)
+		VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM photos WHERE album_id = ?))`)
+		.bind(albumId, key, name, Math.round(w), Math.round(h), taken, digest, albumId).run();
+	return json({ id: r.meta.last_row_id, key, name, w, h, taken_at: taken, hash: digest });
 }
 
 async function createFolder(request, env) {

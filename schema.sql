@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS folders (
 	expires_at TEXT,
 	downloads_off INTEGER NOT NULL DEFAULT 0,
 	views INTEGER NOT NULL DEFAULT 0,
+	last_viewed_at TEXT,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS albums (
 	downloads_off INTEGER NOT NULL DEFAULT 0,
 	views INTEGER NOT NULL DEFAULT 0,
 	downloads INTEGER NOT NULL DEFAULT 0,
+	photo_count INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS photos (
 	h INTEGER NOT NULL,
 	sort INTEGER NOT NULL DEFAULT 0,
 	taken_at TEXT,
+	hash TEXT,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -60,6 +63,30 @@ CREATE TABLE IF NOT EXISTS favorites (
 
 CREATE INDEX IF NOT EXISTS photos_album ON photos(album_id, sort, id);
 CREATE INDEX IF NOT EXISTS albums_folder ON albums(folder_id);
+CREATE INDEX IF NOT EXISTS photos_hash ON photos(album_id, hash);
+
+-- albums.photo_count stays current through these, so pages never count photo rows.
+CREATE TRIGGER IF NOT EXISTS photos_count_insert AFTER INSERT ON photos BEGIN
+	UPDATE albums SET photo_count = photo_count + 1 WHERE id = NEW.album_id;
+END;
+CREATE TRIGGER IF NOT EXISTS photos_count_delete AFTER DELETE ON photos BEGIN
+	UPDATE albums SET photo_count = photo_count - 1 WHERE id = OLD.album_id;
+END;
+CREATE TRIGGER IF NOT EXISTS photos_count_move AFTER UPDATE OF album_id ON photos WHEN NEW.album_id IS NOT OLD.album_id BEGIN
+	UPDATE albums SET photo_count = photo_count - 1 WHERE id = OLD.album_id;
+	UPDATE albums SET photo_count = photo_count + 1 WHERE id = NEW.album_id;
+END;
+
+-- Deleted photos and albums, kept 7 days with their files so they can be restored.
+-- data: the deleted rows as JSON; keys: their R2 file prefixes, removed when the item is purged.
+CREATE TABLE IF NOT EXISTS trash (
+	id INTEGER PRIMARY KEY,
+	kind TEXT NOT NULL,
+	title TEXT,
+	data TEXT NOT NULL,
+	keys TEXT NOT NULL,
+	deleted_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS login_attempts (
 	ip TEXT NOT NULL,

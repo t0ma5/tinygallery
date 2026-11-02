@@ -10,7 +10,19 @@ const ICON = {
 	prev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.1"><path d="M15 4l-8 8 8 8"/></svg>',
 	next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.1"><path d="M9 4l8 8-8 8"/></svg>',
 	share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 15V4m0 0L8 8m4-4l4 4M6 11H5v9h14v-9h-1"/></svg>',
+	shuffle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M16 4h4v4M4 20L20 4M20 16v4h-4M15 15l5 5M4 4l5 5"/></svg>',
+	qr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM18 14h2M14 18v2"/></svg>',
 };
+
+// Loads a script from this site once (the QR code maker is only needed by the slideshow).
+function loadScript(src) {
+	return new Promise((resolve, reject) => {
+		const s = Object.assign(document.createElement('script'), { src });
+		s.onload = resolve;
+		s.onerror = () => reject(new Error(`Could not load ${src}`));
+		document.head.appendChild(s);
+	});
+}
 
 function toast(message) {
 	const el = Object.assign(document.createElement('div'), { className: 'toast', textContent: message });
@@ -38,6 +50,7 @@ async function shareLink(title, url) {
 }
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const img = (key, size) => `/img/${key}/${size}`;
 const app = document.getElementById('app');
 let photographer = '';
@@ -233,7 +246,10 @@ function renderAlbum(data, token) {
 		${coverHtml(album.cover, album.title, formatDate(album.date), photos.length > 0, back)}
 		<header class="header" id="gallery">
 			<a class="header-back" href="${back}" title="All albums">${ICON.prev}<span class="brand-title">${esc(album.title)}</span></a>
-			${fav ? `<button class="fav-filter" id="fav-filter" type="button" title="Show favourites" hidden>${ICON.heart}<span id="fav-count">0</span></button>` : ''}
+			<div class="header-actions">
+				${fav ? `<button class="fav-filter" id="fav-filter" type="button" title="Show favourites" hidden>${ICON.heart}<span id="fav-count">0</span></button>` : ''}
+				${canDownload && photos.length > 1 ? `<button class="fav-filter dl-all" id="dl-all" type="button" title="Download all photos as one ZIP file">${ICON.download}<span id="dl-all-label">Download all</span></button>` : ''}
+			</div>
 		</header>
 		<main class="grid" id="grid"></main>
 		<div id="more"></div>
@@ -243,6 +259,9 @@ function renderAlbum(data, token) {
 				<span class="lightbox-count" id="lb-count"></span>
 				<div>
 					${fav ? `<button class="download-btn fav-btn" id="lb-fav" type="button">${ICON.heart}<span class="download-label">Favourite</span></button>` : ''}
+					<button class="download-btn slide-only" id="lb-speed" type="button" title="Seconds per photo"><span class="slide-speed" id="lb-speed-label"></span></button>
+					<button class="download-btn slide-only" id="lb-shuffle" type="button" title="Shuffle">${ICON.shuffle}<span class="download-label">Shuffle</span></button>
+					<button class="download-btn slide-only" id="lb-qr" type="button" title="Show a QR code so guests can open this album on their phones">${ICON.qr}<span class="download-label">QR</span></button>
 					<button class="download-btn" id="lb-play" type="button" title="Slideshow">${ICON.play}<span class="download-label">Slideshow</span></button>
 					<button class="download-btn" id="lb-share" type="button">${ICON.share}<span class="download-label">Share</span></button>
 					${canDownload ? `<a class="download-btn" id="lb-download" href="#" download>${ICON.download}<span class="download-label">Download</span></a>` : ''}
@@ -254,6 +273,7 @@ function renderAlbum(data, token) {
 				<img id="lb-img" alt="">
 				<button class="lightbox-nav next" id="lb-next" title="Next">${ICON.next}</button>
 			</div>
+			<div class="slide-qr" id="lb-qrcode" hidden></div>
 		</div>`;
 
 	const download = p => `${img(p.key, 'o')}?dl`;
@@ -340,12 +360,69 @@ function renderAlbum(data, token) {
 		document.getElementById('fav-filter').onclick = () => {
 			onlyFavs = !onlyFavs;
 			visible = onlyFavs ? photos.filter(p => fav.keys.has(p.key)) : photos;
+			order = [];
+			const dl = document.getElementById('dl-all-label');
+			if (dl) dl.textContent = onlyFavs ? 'Download favourites' : 'Download all';
 			layout(true);
 			refreshFavs();
 			document.getElementById('gallery').scrollIntoView();
 		};
 		document.getElementById('lb-fav').onclick = () => toggleFav(visible[current]);
 	}
+
+	// All photos shown (or only the favourites while that filter is on) as one ZIP of the originals, made in the
+	// browser. Chrome and Edge on a computer write it straight to disk; other browsers build it in memory first,
+	// which can fail for very large albums on phones. JPEGs do not shrink in a ZIP, so nothing is compressed.
+	const dlAll = document.getElementById('dl-all');
+	if (dlAll) dlAll.onclick = async () => {
+		const list = visible.slice();
+		const label = document.getElementById('dl-all-label');
+		const idle = label.textContent;
+		const zipName = `${album.title}${onlyFavs ? ' - favourites' : ''}.zip`.replace(/[\\/:*?"<>|]+/g, '-');
+		let file = null;
+		if (window.showSaveFilePicker) {
+			try {
+				file = await (await showSaveFilePicker({ suggestedName: zipName, types: [{ description: 'ZIP file', accept: { 'application/zip': ['.zip'] } }] })).createWritable();
+			} catch (e) {
+				if (e.name === 'AbortError') return;
+			}
+		}
+		dlAll.disabled = true;
+		try {
+			const { downloadZip } = await import('/vendor/client-zip.js');
+			const names = new Map();
+			// Two photos with the same file name get "name (2).jpg" inside the ZIP.
+			const unique = name => {
+				const n = (names.get(name) || 0) + 1;
+				names.set(name, n);
+				return n === 1 ? name : name.replace(/(\.[^.]*)?$/, ` (${n})$1`);
+			};
+			let done = 0;
+			async function* files() {
+				for (const p of list) {
+					label.textContent = `${done + 1} / ${list.length}`;
+					const res = await fetch(download(p));
+					if (!res.ok) throw new Error(`could not get ${p.name}`);
+					done++;
+					yield { name: unique(p.name || `${p.key}.jpg`), input: res };
+				}
+			}
+			const zip = downloadZip(files());
+			if (file) {
+				await zip.body.pipeTo(file);
+			} else {
+				const url = URL.createObjectURL(await zip.blob());
+				Object.assign(document.createElement('a'), { href: url, download: zipName }).click();
+				setTimeout(() => URL.revokeObjectURL(url), 60000);
+			}
+			toast(`${plural(list.length, 'photo')} saved as ${zipName}`);
+		} catch (e) {
+			toast(`Download stopped: ${e.message}`);
+		} finally {
+			dlAll.disabled = false;
+			label.textContent = idle;
+		}
+	};
 
 	// The tile is a link itself, so its icons cannot be nested links.
 	grid.addEventListener('click', e => {
@@ -461,12 +538,80 @@ function renderAlbum(data, token) {
 
 	// Slideshow: full screen, a new photo every few seconds, looping until stopped, screen kept awake.
 	// Meant to run unattended, for example on a TV at a party. Follows the favourites filter.
-	const SLIDE_SECONDS = 5;
+	// Speed, shuffle and the QR code are remembered in this browser.
+	const SPEEDS = [3, 5, 10];
+	let slideSeconds = SPEEDS.includes(Number(store.get('tg-slide-seconds'))) ? Number(store.get('tg-slide-seconds')) : 5;
+	let shuffle = store.get('tg-slide-shuffle') === '1';
+	let showQr = store.get('tg-slide-qr') === '1';
+	let order = []; // shuffled photo positions still to show in this round
 	const playBtn = document.getElementById('lb-play');
 	let playing = false;
 	let timer = null;
 	let wakeLock = null;
 	let hideUi = null;
+
+	function slideButtons() {
+		document.getElementById('lb-speed-label').textContent = `${slideSeconds} s`;
+		document.getElementById('lb-shuffle').classList.toggle('on', shuffle);
+		document.getElementById('lb-qr').classList.toggle('on', showQr);
+	}
+	slideButtons();
+	document.getElementById('lb-speed').onclick = () => {
+		slideSeconds = SPEEDS[(SPEEDS.indexOf(slideSeconds) + 1) % SPEEDS.length];
+		store.set('tg-slide-seconds', slideSeconds);
+		slideButtons();
+		if (playing) nextSlide();
+	};
+	document.getElementById('lb-shuffle').onclick = () => {
+		shuffle = !shuffle;
+		order = [];
+		store.set('tg-slide-shuffle', shuffle ? '1' : '0');
+		slideButtons();
+	};
+	document.getElementById('lb-qr').onclick = () => {
+		showQr = !showQr;
+		store.set('tg-slide-qr', showQr ? '1' : '0');
+		slideButtons();
+		drawQr();
+	};
+
+	// A QR code in the corner so guests can open the album on their own phones (the link of this page).
+	const qrBox = document.getElementById('lb-qrcode');
+	async function drawQr() {
+		qrBox.hidden = !(playing && showQr);
+		if (qrBox.hidden || qrBox.firstChild) return;
+		try {
+			if (!window.qrcode) await loadScript('/vendor/qrcode.js');
+			const qr = qrcode(0, 'M');
+			qr.addData(location.origin + location.pathname);
+			qr.make();
+			qrBox.innerHTML = `${qr.createSvgTag({ cellSize: 4, margin: 8, scalable: true })}<span>Scan for the album</span>`;
+		} catch {
+			qrBox.hidden = true;
+		}
+	}
+
+	// Next photo: in order, or in a shuffled order that shows every photo once before repeating.
+	function advance() {
+		if (!shuffle || visible.length < 3) return go(1);
+		if (!order.length) {
+			order = visible.map((_, i) => i).filter(i => i !== current);
+			for (let i = order.length - 1; i > 0; i--) {
+				const j = Math.floor(Math.random() * (i + 1));
+				[order[i], order[j]] = [order[j], order[i]];
+			}
+		}
+		const i = order.pop();
+		if (i >= visible.length) { order = []; return go(1); }
+		history.replaceState(null, '', `#p${i + 1}`);
+		onHash();
+	}
+
+	function revealUi() {
+		lb.classList.add('show-ui');
+		clearTimeout(hideUi);
+		hideUi = setTimeout(() => lb.classList.remove('show-ui'), 3000);
+	}
 
 	async function keepAwake() {
 		try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
@@ -481,13 +626,14 @@ function renderAlbum(data, token) {
 		// Full screen where the browser allows it (not on iPhone); the slideshow runs either way.
 		if (!document.fullscreenElement) lb.requestFullscreen?.().catch(() => {});
 		keepAwake();
+		drawQr();
 		if (lb.classList.contains('open')) nextSlide();
 	}
 
 	// Each photo stays the full time after it has loaded, so slow wifi never skips photos.
 	function nextSlide() {
 		clearTimeout(timer);
-		timer = setTimeout(() => go(1), SLIDE_SECONDS * 1000);
+		timer = setTimeout(advance, slideSeconds * 1000);
 	}
 
 	function stopShow() {
@@ -495,6 +641,7 @@ function renderAlbum(data, token) {
 		playing = false;
 		clearTimeout(timer);
 		lb.classList.remove('slideshow', 'show-ui');
+		qrBox.hidden = true;
 		playBtn.innerHTML = `${ICON.play}<span class="download-label">Slideshow</span>`;
 		wakeLock?.release().catch(() => {});
 		wakeLock = null;
@@ -502,20 +649,15 @@ function renderAlbum(data, token) {
 	}
 
 	playBtn.onclick = () => (playing ? stopShow() : startShow());
-	// A tap or click anywhere on the photo stops it; the buttons keep their own action.
+	// The controls stay hidden while it plays. A tap on the photo shows them (phones have no mouse to move);
+	// a tap while they show stops the slideshow. The buttons keep their own action.
 	lb.addEventListener('pointerdown', e => {
-		if (playing && !e.target.closest('button, a')) {
-			e.stopPropagation();
-			stopShow();
-		}
+		if (!playing || e.target.closest('button, a')) return;
+		e.stopPropagation();
+		if (lb.classList.contains('show-ui')) stopShow();
+		else revealUi();
 	}, true);
-	// The controls stay hidden while it plays and appear for a moment when the mouse moves.
-	lb.addEventListener('mousemove', () => {
-		if (!playing) return;
-		lb.classList.add('show-ui');
-		clearTimeout(hideUi);
-		hideUi = setTimeout(() => lb.classList.remove('show-ui'), 2500);
-	});
+	lb.addEventListener('mousemove', () => { if (playing) revealUi(); });
 	document.addEventListener('fullscreenchange', () => {
 		if (playing && !document.fullscreenElement) stopShow();
 	});

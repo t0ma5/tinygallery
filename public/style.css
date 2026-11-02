@@ -1088,3 +1088,119 @@ select.field { appearance: auto; }
 
 .lightbox.slideshow.show-ui { cursor: default; }
 .lightbox.slideshow.show-ui .lightbox-bar { opacity: 1; pointer-events: auto; }
+
+/* Album editor: select photos to move or delete */
+
+.select-bar {
+	position: sticky;
+	top: var(--header);
+	z-index: 5;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin: 0 0 12px;
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	background: var(--bg);
+	font-size: 13px;
+}
+
+.select-bar[hidden] { display: none; }
+.select-bar #select-count { margin-right: auto; }
+.select-bar select.field { width: auto; min-width: 180px; }
+.photo-grid.selecting .photo-actions,
+.photo-grid.selecting .cover-badge { display: none; }
+.photo-grid.selecting .photo-cell { cursor: pointer; }
+.photo-grid.selecting .photo-cell img { transition: opacity .15s; }
+.photo-grid.selecting .photo-cell:not(.picked) img { opacity: .6; }
+.photo-cell.picked { outline-color: var(--text); }
+
+.photo-cell.picked::after {
+	content: '✓';
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--text);
+	color: var(--bg);
+	font-size: 13px;
+	font-weight: 700;
+}
+
+/* Trash */
+
+.trash-row .album-thumb img { opacity: .7; }
+
+.trash-photos {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.trash-photos figure {
+	position: relative;
+	margin: 0;
+	aspect-ratio: 1;
+	background: var(--tile);
+}
+
+.trash-photos img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .7; }
+
+.trash-photos .btn-small {
+	position: absolute;
+	inset: auto 6px 6px;
+	padding: 4px 6px;
+	background: rgba(0, 0, 0, .55);
+	border-color: rgba(255, 255, 255, .3);
+}
+
+/* QR code */
+
+.qr-box { width: min(420px, 100%); text-align: center; }
+.qr-code { display: flex; justify-content: center; background: #fff; line-height: 0; }
+.qr-code svg { width: min(100%, 50vh); height: auto; }
+.qr-url { word-break: break-all; font-size: 12px; }
+
+/* Album header: favourites filter and "Download all" side by side */
+
+.header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.dl-all:disabled { opacity: .7; cursor: progress; }
+
+@media (max-width: 480px) {
+	.dl-all #dl-all-label { display: none; }
+}
+
+/* Slideshow options: only shown while it plays */
+
+.slide-only { display: none; }
+.lightbox.slideshow .slide-only { display: inline-flex; }
+.slide-speed { font-size: 11px; font-weight: 600; letter-spacing: .1em; min-width: 2.5em; }
+.slide-only.on { opacity: 1; }
+.slide-only.on svg { stroke-width: 2.2; }
+
+.slide-qr {
+	position: absolute;
+	right: 24px;
+	bottom: 24px;
+	z-index: 3;
+	display: grid;
+	gap: 6px;
+	width: 148px;
+	padding: 10px 10px 8px;
+	background: #fff;
+	color: #111;
+	text-align: center;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: .12em;
+	text-transform: uppercase;
+}
+
+.slide-qr[hidden] { display: none; }
+.slide-qr svg { width: 100%; height: auto; display: block; }

@@ -10,12 +10,14 @@ const ICON = {
 
 ICON.heart = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>';
 
-// One line under a folder name: albums, views, favourites, password and expiry at a glance.
+// One line under a folder name: albums, views, last opened, favourites, password and expiry at a glance.
 function folderMeta(f, albums) {
 	const today = new Date().toISOString().slice(0, 10);
 	return [
 		plural(albums.length, 'album'),
 		plural(f.views, 'view'),
+		// Stored in UTC as "YYYY-MM-DD HH:MM:SS".
+		f.last_viewed_at ? `opened ${timeAgo(Date.parse(f.last_viewed_at.replace(' ', 'T') + 'Z'))}` : 'not opened yet',
 		f.favorites && `♥ ${f.favorites}`,
 		f.has_password && 'password',
 		f.expires_at && (f.expires_at < today ? 'expired' : `until ${f.expires_at}`),
@@ -183,7 +185,7 @@ async function api(path, { method = 'GET', body } = {}) {
 		renderLogin();
 		throw new LoginNeeded();
 	}
-	if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+	if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status, data });
 	return data;
 }
 
@@ -396,6 +398,118 @@ function previewPhotos(photos, start) {
 	document.body.appendChild(el);
 }
 
+/* QR codes for links: the library loads only when one is asked for */
+
+function loadScript(src) {
+	return new Promise((resolve, reject) => {
+		const s = Object.assign(document.createElement('script'), { src });
+		s.onload = resolve;
+		s.onerror = () => reject(new Error('Could not load the QR code maker'));
+		document.head.appendChild(s);
+	});
+}
+
+async function makeQr(url) {
+	if (!window.qrcode) await loadScript('/vendor/qrcode.js');
+	const qr = qrcode(0, 'M');
+	qr.addData(url);
+	qr.make();
+	return qr;
+}
+
+// A big QR code for printing or showing on a screen, with a PNG to save.
+async function showQr(url, title) {
+	const qr = await makeQr(url);
+	const n = qr.getModuleCount();
+	const cell = Math.ceil(1200 / n);
+	const canvas = Object.assign(document.createElement('canvas'), { width: (n + 8) * cell, height: (n + 8) * cell });
+	const g = canvas.getContext('2d');
+	g.fillStyle = '#fff';
+	g.fillRect(0, 0, canvas.width, canvas.height);
+	g.fillStyle = '#000';
+	for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect((c + 4) * cell, (r + 4) * cell, cell, cell);
+	const el = document.createElement('div');
+	el.className = 'modal';
+	el.innerHTML = `
+		<div class="modal-box qr-box">
+			<h2>${esc(title)}</h2>
+			<div class="qr-code">${qr.createSvgTag({ cellSize: 4, margin: 16, scalable: true })}</div>
+			<p class="qr-url">${esc(url)}</p>
+			<div class="row-actions">
+				<a class="btn-small" download="${esc(slugText(title))}-qr.png" href="${canvas.toDataURL('image/png')}">Save PNG</a>
+				<button type="button" class="btn-small primary" data-close>Close</button>
+			</div>
+		</div>`;
+	const close = () => { el.remove(); document.removeEventListener('keydown', onKey); };
+	const onKey = e => { if (e.key === 'Escape') close(); };
+	el.addEventListener('click', e => { if (e.target === el || e.target.closest('[data-close]')) close(); });
+	document.addEventListener('keydown', onKey);
+	document.body.appendChild(el);
+}
+
+const slugText = s => searchText(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'gallery';
+
+/* Trash: deleted photos and albums, restorable for S.trashDays days */
+
+function trashHtml() {
+	if (!S.trash.length) return '';
+	const left = t => {
+		const days = Math.ceil((t.deleted_at + S.trashDays * 86400000 - Date.now()) / 86400000);
+		return days <= 1 ? 'removed within a day' : `${days} days left`;
+	};
+	const albums = S.trash.filter(t => t.kind === 'album');
+	const photos = S.trash.filter(t => t.kind === 'photo');
+	return `
+		<h2 class="admin-h">Trash</h2>
+		<p class="admin-hint">Deleted photos and albums stay here for ${S.trashDays} days, then they are removed for good.
+			<button type="button" class="link-btn" data-trash-empty>Empty trash now</button></p>
+		<ul class="folder-list" id="trash-list">
+			${albums.map(t => `
+				<li class="album-row trash-row" data-trash="${t.id}">
+					<span class="album-thumb">${t.key ? `<img src="${img(t.key, 't')}" alt="">` : ''}</span>
+					<div class="folder-info">
+						<span class="folder-name">${esc(t.title)}</span>
+						<span class="folder-meta">Album · ${plural(t.photos, 'photo')} · ${left(t)}</span>
+					</div>
+					<div class="row-actions">
+						<button class="btn-small" data-restore>Restore</button>
+						<button class="btn-small danger" data-purge>Delete now</button>
+					</div>
+				</li>`).join('')}
+		</ul>
+		${photos.length ? `
+			<div class="trash-photos">
+				${photos.map(t => `
+					<figure data-trash="${t.id}" title="${esc(t.title)} · ${left(t)}">
+						<img src="${img(t.key, 't')}" alt="" loading="lazy">
+						<button class="btn-small" data-restore>Restore</button>
+					</figure>`).join('')}
+			</div>` : ''}`;
+}
+
+function bindTrash() {
+	app.querySelectorAll('[data-trash] [data-restore]').forEach(btn => {
+		btn.onclick = () => run(async () => {
+			await api(`trash/${btn.closest('[data-trash]').dataset.trash}/restore`, { method: 'POST' });
+			toast('Restored');
+			await refresh();
+		});
+	});
+	app.querySelectorAll('[data-trash] [data-purge]').forEach(btn => {
+		btn.onclick = () => run(async () => {
+			if (!confirm('Delete this album and its photos for good? This cannot be undone.')) return;
+			await api(`trash/${btn.closest('[data-trash]').dataset.trash}`, { method: 'DELETE' });
+			await refresh();
+		});
+	});
+	const empty = app.querySelector('[data-trash-empty]');
+	if (empty) empty.onclick = () => run(async () => {
+		if (!confirm(`Remove everything in the trash (${plural(S.trash.length, 'item')}) for good? This cannot be undone.`)) return;
+		await api('trash', { method: 'DELETE' });
+		await refresh();
+	});
+}
+
 /* Main page */
 
 function renderMain() {
@@ -415,6 +529,11 @@ function renderMain() {
 			<p class="admin-hint" id="storage">${storageLine(S.storage)}</p>
 			<label class="check"><input type="checkbox" id="strip-gps"${S.stripGps ? ' checked' : ''}>
 				Remove GPS location from originals when uploading (JPEG)</label>
+			<form class="inline-form" id="watermark">
+				<input class="field" id="watermark-text" value="${esc(S.watermark)}" maxlength="60" placeholder="Watermark, e.g. © ${esc(S.photographer)}">
+				<button class="btn-small" type="submit">Save</button>
+			</form>
+			<p class="admin-hint">Watermark: drawn on the display copy of photos uploaded from now on, not on thumbnails or originals. Leave empty for none.</p>
 			<p class="admin-hint">Lost a phone or laptop that was logged in?
 				<button type="button" class="link-btn" id="logout-all">Log out on all devices</button></p>
 
@@ -427,6 +546,7 @@ function renderMain() {
 				<input class="field link-field" readonly value="${esc(location.origin + '/')}">
 				<div class="row-actions">
 					<button class="btn-small" data-copy>Copy link</button>
+					<button class="btn-small" data-qr="${esc(S.photographer)}">QR code</button>
 					<a class="btn-small" href="/" target="_blank" rel="noopener">Open</a>
 				</div>
 				${coverPicker('home', 0, S.homeCovers.map(c => c.id), uniquePhotos([...S.homeCovers, ...publicAlbums.flatMap(a => a.picks)]))}
@@ -486,6 +606,7 @@ function renderMain() {
 						<input class="field link-field" readonly value="${esc(`${location.origin}/f/${f.token}`)}">
 						<div class="row-actions">
 							<button class="btn-small" data-copy>Copy link</button>
+							<button class="btn-small" data-qr="${esc(f.title)}">QR code</button>
 							<a class="btn-small" href="/f/${f.token}" target="_blank" rel="noopener">Open</a>
 							<button class="btn-small" data-act="rename">Rename</button>
 							<button class="btn-small" data-act="relink" title="The old link stops working">New link</button>
@@ -513,6 +634,8 @@ function renderMain() {
 				<input class="field" id="folder-title" placeholder="New folder, e.g. a name or an event" maxlength="120" required>
 				<button class="btn-small" type="submit">Create folder</button>
 			</form>
+
+			${trashHtml()}
 		</main>`;
 
 	bindHeader();
@@ -527,8 +650,13 @@ function renderMain() {
 		};
 	});
 
+	app.querySelectorAll('[data-qr]').forEach(btn => {
+		btn.onclick = () => run(() => showQr(btn.closest('.folder-row').querySelector('.link-field').value, btn.dataset.qr));
+	});
+
 	bindSearch('albums');
 	bindSearch('folders');
+	bindTrash();
 
 	app.querySelectorAll('.folder-toggle').forEach(btn => {
 		btn.onclick = () => {
@@ -657,6 +785,16 @@ function renderMain() {
 		});
 	});
 
+	document.getElementById('watermark').addEventListener('submit', e => {
+		e.preventDefault();
+		run(async () => {
+			const text = document.getElementById('watermark-text').value.trim();
+			await api('watermark', { method: 'PUT', body: { text } });
+			S.watermark = text;
+			toast(text ? 'Watermark saved, used for new uploads' : 'Watermark off');
+		});
+	});
+
 	document.getElementById('logout-all').onclick = () => run(async () => {
 		if (!confirm('Log out on every device, including this one?')) return;
 		await api('logout-all', { method: 'POST' });
@@ -717,12 +855,25 @@ async function renderAlbum(id) {
 				<span>Drop photos here or click to choose</span>
 				<small id="progress">JPEG, PNG or WebP. Originals are kept for download.</small>
 			</label>
-			<p class="admin-hint">Cover, order and deletions save at once. Drag ⠿ to reorder.
-				<button type="button" class="link-btn" id="sort-taken">Sort by date taken</button></p>
+			<p class="admin-hint">Cover, order and deletions save at once. Drag ⠿ to reorder. The same photo is never added twice.
+				<button type="button" class="link-btn" id="sort-taken">Sort by date taken</button> ·
+				<button type="button" class="link-btn" id="select-mode">Select photos</button></p>
+			<div class="select-bar" id="select-bar" hidden>
+				<span id="select-count">Tap photos to select</span>
+				<button type="button" class="link-btn" id="select-all">Select all</button>
+				<select class="field" id="move-to">
+					<option value="">Move to album…</option>
+					${S.albums.filter(x => x.id !== id).map(x => `<option value="${x.id}">${esc(x.title)} (${esc(whereLabel(x))})</option>`).join('')}
+				</select>
+				<button type="button" class="btn-small" id="move-selected">Move</button>
+				<button type="button" class="btn-small danger" id="delete-selected">Delete</button>
+				<button type="button" class="btn-small primary" id="select-done">Done</button>
+			</div>
 			<div class="photo-grid" id="photos"></div>
 
 			<h2 class="admin-h">Danger zone</h2>
 			<button class="btn-small danger" id="delete-album">Delete album and all its photos</button>
+			<p class="admin-hint">Deleted photos and albums go to the trash on the main page for ${S.trashDays} days.</p>
 		</main>`;
 
 	bindHeader();
@@ -778,24 +929,78 @@ async function renderAlbum(id) {
 		toast('Sorted by date taken');
 	});
 
+	// Takes photos off this page after a delete or a move.
+	const dropPhotos = ids => {
+		for (const pid of ids) {
+			grid.querySelector(`[data-id="${pid}"]`)?.remove();
+			const i = photos.findIndex(p => p.id === pid);
+			if (i >= 0) photos.splice(i, 1);
+		}
+		// Without a chosen cover the album uses its first photo, as the server does.
+		if (ids.includes(coverId)) setCover(inOrder()[0]?.id);
+		drawCoverRow();
+		updateCount();
+	};
+
+	// Select mode: taps pick photos instead of opening them, for moving or deleting many at once.
+	const bar = document.getElementById('select-bar');
+	const picked = () => [...grid.querySelectorAll('.photo-cell.picked')].map(el => Number(el.dataset.id));
+	const showPicked = () => {
+		const n = picked().length;
+		document.getElementById('select-count').textContent = n ? `${plural(n, 'photo')} selected` : 'Tap photos to select';
+	};
+	const selectMode = on => {
+		grid.classList.toggle('selecting', on);
+		bar.hidden = !on;
+		if (!on) grid.querySelectorAll('.picked').forEach(el => el.classList.remove('picked'));
+		showPicked();
+	};
+	document.getElementById('select-mode').onclick = () => selectMode(true);
+	document.getElementById('select-done').onclick = () => selectMode(false);
+	document.getElementById('select-all').onclick = () => {
+		grid.querySelectorAll('.photo-cell').forEach(el => el.classList.add('picked'));
+		showPicked();
+	};
+	document.getElementById('delete-selected').onclick = () => run(async () => {
+		const ids = picked();
+		if (!ids.length) return toast('Select photos first');
+		if (!confirm(`Delete ${plural(ids.length, 'photo')}? They stay in the trash for ${S.trashDays} days.`)) return;
+		await api('photos/delete', { method: 'POST', body: { ids } });
+		dropPhotos(ids);
+		showPicked();
+		toast(`${plural(ids.length, 'photo')} moved to the trash`);
+	});
+	document.getElementById('move-selected').onclick = () => run(async () => {
+		const ids = picked();
+		const target = Number(document.getElementById('move-to').value);
+		if (!ids.length) return toast('Select photos first');
+		if (!target) return toast('Choose the album to move them to');
+		const name = S.albums.find(x => x.id === target)?.title || 'the album';
+		await api('photos/move', { method: 'POST', body: { ids: inOrder().map(p => p.id).filter(pid => ids.includes(pid)), album_id: target } });
+		dropPhotos(ids);
+		showPicked();
+		toast(`${plural(ids.length, 'photo')} moved to "${name}"`);
+	});
+
 	grid.addEventListener('click', e => {
 		const c = e.target.closest('.photo-cell');
 		if (!c) return;
 		const photoId = Number(c.dataset.photo);
+		if (grid.classList.contains('selecting')) {
+			if (e.target.closest('.drag-handle')) return;
+			c.classList.toggle('picked');
+			return showPicked();
+		}
 		if (e.target.closest('[data-open]')) {
 			const list = inOrder();
 			previewPhotos(list, list.findIndex(p => p.id === photoId));
 		}
+		// One photo goes to the trash without asking: it can be restored from the main page.
 		if (e.target.closest('[data-delete]')) run(async () => {
-			if (!confirm('Delete this photo?')) return;
-			await api(`photos/${photoId}`, { method: 'DELETE' });
+			await api('photos/delete', { method: 'POST', body: { ids: [photoId] } });
 			S.photoCount--;
-			c.remove();
-			photos.splice(photos.findIndex(p => p.id === photoId), 1);
-			// Without a chosen cover the album uses its first photo, as the server does.
-			if (coverId === photoId) setCover(inOrder()[0]?.id);
-			drawCoverRow();
-			updateCount();
+			dropPhotos([photoId]);
+			toast('Moved to the trash');
 		});
 	});
 
@@ -817,7 +1022,7 @@ async function renderAlbum(id) {
 	});
 
 	document.getElementById('delete-album').onclick = () => run(async () => {
-		if (!confirm(`Delete "${a.title}" and all ${grid.children.length} photos? This cannot be undone.`)) return;
+		if (!confirm(`Delete "${a.title}" and all ${grid.children.length} photos? You can restore it from the trash for ${S.trashDays} days.`)) return;
 		await api(`albums/${id}`, { method: 'DELETE' });
 		S = await api('state');
 		location.hash = '';
@@ -834,8 +1039,10 @@ async function renderAlbum(id) {
 		upload([...e.dataTransfer.files]);
 	});
 
-	// Uploads keep going if the admin opens another page of the admin; only this page's grid is updated,
-	// and only while it is still on screen.
+	// Uploads run 3 at a time and keep going if the admin opens another page of the admin; only this page's grid
+	// is updated, and only while it is still on screen. Photos end up in the order the files were chosen.
+	// The same file twice (already in the album, or chosen twice) is skipped.
+	const PARALLEL = 3;
 	let busy = false;
 	async function upload(files) {
 		files = files.filter(f => /^image\//.test(f.type));
@@ -844,15 +1051,27 @@ async function renderAlbum(id) {
 		uploading++;
 		const progress = document.getElementById('progress');
 		const here = () => grid.isConnected;
+		const before = inOrder().map(p => p.id);
+		const added = new Array(files.length); // by file position
+		const finishOrder = [];
 		const failed = [];
-		let done = 0;
-		try {
-			for (const [i, file] of files.entries()) {
-				progress.textContent = `Uploading ${i + 1} / ${files.length}: ${file.name}`;
+		const seen = new Set(photos.map(p => p.hash).filter(Boolean));
+		let skipped = 0;
+		let next = 0;
+		let stopped = false;
+		const status = () => {
+			const done = finishOrder.length + failed.length + skipped;
+			progress.textContent = `Uploading ${Math.min(done + 1, files.length)} / ${files.length}` + (skipped ? ` · ${skipped} already in the album` : '');
+		};
+		const worker = async () => {
+			while (!stopped && next < files.length) {
+				const i = next++;
+				status();
 				try {
-					const p = await uploadOne(id, file);
-					done++;
-					S.photoCount++;
+					const p = await uploadOne(id, files[i], seen, photos);
+					if (!p) { skipped++; continue; }
+					added[i] = p;
+					finishOrder.push(p.id);
 					photos.push(p);
 					if (!coverId) coverId = p.id;
 					if (here()) {
@@ -860,15 +1079,28 @@ async function renderAlbum(id) {
 						updateCount();
 					}
 				} catch (e) {
-					if (e instanceof LoginNeeded) return;
-					failed.push(`${file.name} (${e.message})`);
+					if (e instanceof LoginNeeded) { stopped = true; return; }
+					failed.push(`${files[i].name} (${e.message})`);
 				}
+			}
+		};
+		try {
+			await Promise.all(Array.from({ length: Math.min(PARALLEL, files.length) }, worker));
+			// Parallel uploads finish in any order: put them back in the order the files were chosen.
+			const wanted = added.filter(Boolean).map(p => p.id);
+			if (!stopped && wanted.join() !== finishOrder.join()) {
+				await saveOrder([...before, ...wanted]);
+				if (here()) wanted.forEach(pid => grid.appendChild(grid.querySelector(`[data-id="${pid}"]`)));
 			}
 		} finally {
 			busy = false;
 			uploading--;
 		}
-		const summary = failed.length ? `Done. Failed: ${failed.join(', ')}` : `Done. ${plural(done, 'photo')} uploaded.`;
+		if (stopped) return;
+		const parts = [`${plural(finishOrder.length, 'photo')} uploaded`];
+		if (skipped) parts.push(`${skipped} skipped, already in the album`);
+		if (failed.length) parts.push(`failed: ${failed.join(', ')}`);
+		const summary = `Done. ${parts.join('. ')}.`;
 		if (!here()) return toast(`"${a.title}": ${summary}`);
 		input.value = '';
 		progress.textContent = summary;
@@ -886,7 +1118,7 @@ window.addEventListener('beforeunload', e => {
 
 /* Browser-side resizing: the server only stores files. */
 
-async function resize(bitmap, maxEdge, quality) {
+async function resize(bitmap, maxEdge, quality, watermark = '') {
 	let source = bitmap;
 	let w = bitmap.width;
 	let h = bitmap.height;
@@ -909,6 +1141,7 @@ async function resize(bitmap, maxEdge, quality) {
 	const g = canvas.getContext('2d');
 	g.imageSmoothingQuality = 'high';
 	g.drawImage(source, 0, 0, tw, th);
+	if (watermark) await drawWatermark(canvas, watermark);
 	return new Promise((resolve, reject) => canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Could not resize'))), 'image/jpeg', quality));
 }
 
@@ -924,15 +1157,47 @@ async function putFile(key, size, blob, name) {
 	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Upload failed (${res.status})`);
 }
 
-async function uploadOne(albumId, file) {
+// Fingerprint of the file exactly as chosen (before GPS removal), so the same photo is recognised again.
+async function sha256Hex(buf) {
+	return [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Watermark text in the lower right corner of a display copy, sized to the photo.
+async function drawWatermark(canvas, text) {
+	const g = canvas.getContext('2d');
+	const size = Math.max(14, Math.round(Math.min(canvas.width, canvas.height) * 0.032));
+	await document.fonts.load(`500 ${size}px Montserrat`).catch(() => {});
+	g.font = `500 ${size}px Montserrat, sans-serif`;
+	g.textAlign = 'right';
+	g.textBaseline = 'bottom';
+	g.shadowColor = 'rgba(0, 0, 0, .45)';
+	g.shadowBlur = size / 3;
+	g.fillStyle = 'rgba(255, 255, 255, .78)';
+	g.fillText(text, canvas.width - size, canvas.height - size * 0.8);
+}
+
+// Uploads one photo; returns null when the same file is already in the album.
+// seen: fingerprints in the album and earlier in this batch; photos: the album's photos (older ones have no fingerprint).
+async function uploadOne(albumId, file, seen, photos) {
+	const buf = await file.arrayBuffer();
+	const hash = await sha256Hex(buf);
+	if (seen.has(hash)) return null;
+	seen.add(hash);
+
 	let bitmap;
 	try {
 		bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
 	} catch {
+		seen.delete(hash);
 		throw new Error('this browser cannot read the file');
 	}
 	const { width: w, height: h } = bitmap;
-	const display = await resize(bitmap, 2400, 0.86);
+	// Photos uploaded before fingerprints existed: same file name and size counts as the same photo.
+	if (photos.some(p => !p.hash && p.name === file.name && p.w === w && p.h === h)) {
+		bitmap.close();
+		return null;
+	}
+	const display = await resize(bitmap, 2400, 0.86, S.watermark);
 	const thumb = await resize(bitmap, 900, 0.82);
 	bitmap.close();
 
@@ -940,7 +1205,6 @@ async function uploadOne(albumId, file) {
 	let original = file;
 	let taken = null;
 	if (file.type === 'image/jpeg') {
-		const buf = await file.arrayBuffer();
 		try {
 			taken = readExif(buf)?.taken || null;
 			if (S.stripGps) {
@@ -952,11 +1216,18 @@ async function uploadOne(albumId, file) {
 		}
 	}
 
-	const { key } = await api(`albums/${albumId}/photos`, { method: 'POST' });
+	// The server checks the fingerprint too (another tab or device may have added the photo meanwhile).
+	let key;
+	try {
+		({ key } = await api(`albums/${albumId}/photos`, { method: 'POST', body: { hash } }));
+	} catch (e) {
+		if (e.data?.duplicate) return null;
+		throw e;
+	}
 	await putFile(key, 't', thumb);
 	await putFile(key, 'd', display);
 	await putFile(key, 'o', original, file.name);
-	return api(`albums/${albumId}/photos/${key}`, { method: 'POST', body: { w, h, taken_at: taken } });
+	return api(`albums/${albumId}/photos/${key}`, { method: 'POST', body: { w, h, taken_at: taken, hash } });
 }
 
 /* Routing */
