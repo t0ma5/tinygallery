@@ -1,0 +1,18 @@
+# Cloudflare Pages config. For your own copy, change name, database_id and bucket_name
+# (see README.md, "Deploy your own").
+name = "tinygallery"
+pages_build_output_dir = "./public"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Default site name; the admin can change it under "Site name".
+PHOTOGRAPHER = "Tiny Gallery"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tinygallery"
+database_id = "d90acfa5-119c-44ad-b104-79b1729c6ff0"
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "tinygallery"
