@@ -415,6 +415,8 @@ function renderMain() {
 			<p class="admin-hint" id="storage">${storageLine(S.storage)}</p>
 			<label class="check"><input type="checkbox" id="strip-gps"${S.stripGps ? ' checked' : ''}>
 				Remove GPS location from originals when uploading (JPEG)</label>
+			<p class="admin-hint">Lost a phone or laptop that was logged in?
+				<button type="button" class="link-btn" id="logout-all">Log out on all devices</button></p>
 
 			<h2 class="admin-h">Public home page</h2>
 			<div class="folder-row">
@@ -496,7 +498,7 @@ function renderMain() {
 							<label class="setting">Link works until
 								<input class="field date-field" type="date" data-setting="expires_at" value="${esc(f.expires_at || '')}">
 								${f.expires_at ? '<button type="button" class="link-btn" data-act="noexpiry">No expiry</button>' : ''}</label>
-							<label class="setting"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
+							<label class="setting" title="Off hides the buttons and blocks the full-size originals; photos on screen can still be saved"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
 						</div>
 						${f.favorites ? `<details class="favorites" data-favorites="${f.id}">
 							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
@@ -646,12 +648,19 @@ function renderMain() {
 		run(async () => {
 			S.storage = await api('storage', { method: 'POST' });
 			document.getElementById('storage').innerHTML = storageLine(S.storage);
+			if (S.storage.removed) toast(`Removed ${plural(S.storage.removed, 'file')} left over from unfinished uploads`);
 		}).finally(() => {
 			if (btn.isConnected) {
 				btn.disabled = false;
 				btn.textContent = 'Recount';
 			}
 		});
+	});
+
+	document.getElementById('logout-all').onclick = () => run(async () => {
+		if (!confirm('Log out on every device, including this one?')) return;
+		await api('logout-all', { method: 'POST' });
+		renderLogin();
 	});
 
 	document.getElementById('site-name').addEventListener('submit', e => {
@@ -695,7 +704,7 @@ async function renderAlbum(id) {
 				<label class="label" for="where">Shown on</label>
 				${whereSelect('where', whereValue(a))}
 				<label class="check"><input type="checkbox" id="downloads"${a.downloads_off ? '' : ' checked'}> Allow downloads
-					<small>(off also stops full-resolution zoom)</small></label>
+					<small>(off hides the buttons and blocks the full-size original and its zoom; photos on screen can still be saved)</small></label>
 				<div class="row-actions">
 					<button class="btn-small" type="submit">Save details</button>
 					<a class="btn-small" href="${albumUrl(a)}" target="_blank" rel="noopener">Open album</a>
@@ -825,32 +834,55 @@ async function renderAlbum(id) {
 		upload([...e.dataTransfer.files]);
 	});
 
+	// Uploads keep going if the admin opens another page of the admin; only this page's grid is updated,
+	// and only while it is still on screen.
 	let busy = false;
 	async function upload(files) {
 		files = files.filter(f => /^image\//.test(f.type));
 		if (!files.length || busy) return;
 		busy = true;
+		uploading++;
 		const progress = document.getElementById('progress');
+		const here = () => grid.isConnected;
 		const failed = [];
-		for (const [i, file] of files.entries()) {
-			progress.textContent = `Uploading ${i + 1} / ${files.length}: ${file.name}`;
-			try {
-				const p = await uploadOne(id, file);
-				photos.push(p);
-				if (!coverId) coverId = p.id;
-				grid.insertAdjacentHTML('beforeend', cell(p));
-				updateCount();
-			} catch (e) {
-				if (e instanceof LoginNeeded) return;
-				failed.push(`${file.name} (${e.message})`);
+		let done = 0;
+		try {
+			for (const [i, file] of files.entries()) {
+				progress.textContent = `Uploading ${i + 1} / ${files.length}: ${file.name}`;
+				try {
+					const p = await uploadOne(id, file);
+					done++;
+					S.photoCount++;
+					photos.push(p);
+					if (!coverId) coverId = p.id;
+					if (here()) {
+						grid.insertAdjacentHTML('beforeend', cell(p));
+						updateCount();
+					}
+				} catch (e) {
+					if (e instanceof LoginNeeded) return;
+					failed.push(`${file.name} (${e.message})`);
+				}
 			}
+		} finally {
+			busy = false;
+			uploading--;
 		}
-		busy = false;
+		const summary = failed.length ? `Done. Failed: ${failed.join(', ')}` : `Done. ${plural(done, 'photo')} uploaded.`;
+		if (!here()) return toast(`"${a.title}": ${summary}`);
 		input.value = '';
-		progress.textContent = failed.length ? `Done. Failed: ${failed.join(', ')}` : `Done. ${plural(files.length, 'photo')} uploaded.`;
+		progress.textContent = summary;
 		drawCoverRow();
 	}
 }
+
+// Uploads in progress, so closing or reloading the tab asks first.
+let uploading = 0;
+window.addEventListener('beforeunload', e => {
+	if (!uploading) return;
+	e.preventDefault();
+	e.returnValue = '';
+});
 
 /* Browser-side resizing: the server only stores files. */
 

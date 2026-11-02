@@ -7,6 +7,7 @@ import {
 import { homeData, homeCoverPhotos, folderData, albumData, openFolder, siteName, ALBUM_SQL, ALBUM_ORDER } from '../../lib/data.js';
 
 const MB = 1024 * 1024;
+const MAX_FAVORITES = 20000; // per folder, from all visitors together
 
 export async function onRequest({ request, env, params, waitUntil }) {
 	const path = (params.path || []).join('/');
@@ -104,6 +105,9 @@ async function favorites(request, env, token) {
 	if (!photo) return notFound();
 	const who = typeof name === 'string' ? name.trim().slice(0, 60) || null : null;
 	if (on) {
+		// Anyone with the link can add favourites, so a folder has a ceiling against scripted spam.
+		const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM favorites WHERE folder_id = ?').bind(folderId).first();
+		if (n >= MAX_FAVORITES) return fail('This folder has reached its limit of favourites', 429);
 		await env.DB.batch([
 			env.DB.prepare('INSERT OR IGNORE INTO favorites (folder_id, photo_id, client, name) VALUES (?, ?, ?, ?)')
 				.bind(folderId, photo.id, client, who),
@@ -139,6 +143,11 @@ async function admin(path, request, env) {
 		return json({ ok: true });
 	}
 	if (res === 'storage' && method === 'POST') return recountStorage(env);
+	// A new session epoch makes every admin cookie invalid, on all devices.
+	if (res === 'logout-all' && method === 'POST') {
+		await setSetting(env, 'session_epoch', randomToken(12));
+		return json({ ok: true }, 200, { 'set-cookie': clearCookie });
+	}
 	// Shown on every cover, in the footer, tab titles and link previews.
 	if (res === 'site-name' && method === 'PUT') {
 		const { name } = await request.json();
@@ -208,6 +217,12 @@ async function state(env) {
 		env.DB.prepare('SELECT COUNT(*) AS n FROM photos').first(),
 	]);
 	const setting = k => settings.results.find(r => r.key === k)?.value;
+	// Grouped once, so big galleries stay inside the CPU limit.
+	const picksOf = new Map();
+	for (const p of picks.results) {
+		if (!picksOf.has(p.album_id)) picksOf.set(p.album_id, []);
+		picksOf.get(p.album_id).push({ id: p.id, key: p.key });
+	}
 	return json({
 		photographer: await siteName(env),
 		storage: setting('storage') ? JSON.parse(setting('storage')) : null,
@@ -219,23 +234,35 @@ async function state(env) {
 		folders: folders.results,
 		albums: albums.results.map(a => ({
 			...a,
-			picks: picks.results.filter(p => p.album_id === a.id).map(p => ({ id: p.id, key: p.key })),
+			picks: picksOf.get(a.id) || [],
 		})),
 	});
 }
 
 // Storage use is counted on request only: listing the bucket is a paid (Class A) operation, 1 per 1,000 files.
+// The same pass removes files of uploads that never finished (tab closed, connection lost): files whose key
+// is not in the database and that are over a day old, so uploads running right now are left alone.
 async function recountStorage(env) {
+	const { results } = await env.DB.prepare('SELECT key FROM photos').all();
+	const known = new Set(results.map(r => r.key));
+	const dayAgo = Date.now() - 86400 * 1000;
 	let bytes = 0;
+	const orphans = [];
 	let cursor;
 	do {
 		const page = await env.PHOTOS.list({ cursor, limit: 1000 });
-		for (const obj of page.objects) bytes += obj.size;
+		for (const obj of page.objects) {
+			// Only files named like photo files: anything else in the bucket is never touched.
+			const m = obj.key.match(/^([A-Za-z0-9]{20})\/[tdo]$/);
+			if (m && !known.has(m[1]) && obj.uploaded.getTime() < dayAgo) orphans.push(obj.key);
+			else bytes += obj.size;
+		}
 		cursor = page.truncated ? page.cursor : null;
 	} while (cursor);
+	for (let i = 0; i < orphans.length; i += 1000) await env.PHOTOS.delete(orphans.slice(i, i + 1000));
 	const storage = { bytes, checked: Date.now() };
 	await setSetting(env, 'storage', JSON.stringify(storage));
-	return json(storage);
+	return json({ ...storage, removed: orphans.length });
 }
 
 function cleanTitle(v) {
@@ -296,8 +323,8 @@ async function updateAlbum(request, env, id) {
 		sets.push('title = ?'); values.push(title);
 	}
 	if ('date' in body) { sets.push('date = ?'); values.push(cleanDate(body.date)); }
+	const folderId = body.folder_id ? Number(body.folder_id) : null;
 	if ('folder_id' in body) {
-		const folderId = body.folder_id ? Number(body.folder_id) : null;
 		if (!(await folderExists(env, folderId))) return fail('No such folder');
 		sets.push('folder_id = ?'); values.push(folderId);
 	}
@@ -309,7 +336,13 @@ async function updateAlbum(request, env, id) {
 		sets.push('cover_photo_id = ?'); values.push(p.id);
 	}
 	if (!sets.length) return fail('Nothing to change');
-	await env.DB.prepare(`UPDATE albums SET ${sets.join(', ')} WHERE id = ?`).bind(...values, id).run();
+	const statements = [env.DB.prepare(`UPDATE albums SET ${sets.join(', ')} WHERE id = ?`).bind(...values, id)];
+	// Favourites belong to the folder they were picked in: they go when the album moves elsewhere.
+	if ('folder_id' in body) {
+		statements.push(env.DB.prepare(`DELETE FROM favorites
+			WHERE photo_id IN (SELECT id FROM photos WHERE album_id = ?) AND folder_id IS NOT ?`).bind(id, folderId));
+	}
+	await env.DB.batch(statements);
 	return json({ ok: true });
 }
 

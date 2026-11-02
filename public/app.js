@@ -364,13 +364,14 @@ function renderAlbum(data, token) {
 	let current = -1;
 	let original = null; // key whose original is loading or shown in the viewer
 
-	// Past the display copy's resolution, swap in the original so zoomed detail stays sharp.
+	// Well past the display copy's resolution, swap in the original so zoomed detail stays sharp.
+	// The margin keeps a phone's double-tap zoom on the display copy: originals can be tens of MB on mobile data.
 	// Without downloads the original is not served, so zoom stays on the display copy.
 	const zoom = createZoom(stage, view, {
 		onSwipe: d => go(d),
 		onZoom: shownWidth => {
 			const p = visible[current];
-			if (!canDownload || !p || original === p.key || shownWidth * devicePixelRatio <= view.naturalWidth * 1.05) return;
+			if (!canDownload || !p || original === p.key || shownWidth * devicePixelRatio <= view.naturalWidth * 1.5) return;
 			original = p.key;
 			const full = new Image();
 			full.onload = () => { if (visible[current] === p) view.src = full.src; };
@@ -386,8 +387,15 @@ function renderAlbum(data, token) {
 		zoom.reset();
 		original = null;
 		view.classList.add('fading');
+		// Only the photo still selected may take the screen: after quick swipes an older one can finish last.
+		// A failed photo still shows (as broken) rather than leaving the viewer blank.
 		const next = new Image();
-		next.onload = () => { view.src = src; view.classList.remove('fading'); };
+		next.onload = next.onerror = () => {
+			if (visible[current] !== p) return;
+			view.src = src;
+			view.classList.remove('fading');
+			if (playing) nextSlide();
+		};
 		next.src = src;
 		document.getElementById('lb-count').textContent = `${current + 1} / ${visible.length}`;
 		const dl = document.getElementById('lb-download');
@@ -419,10 +427,23 @@ function renderAlbum(data, token) {
 		onHash();
 	}
 
-	window.addEventListener('hashchange', onHash);
+	// Opened from the grid, closing steps back in history, so the phone's back button does not reopen the photo.
+	// Opened from a shared #p link, closing just drops the hash.
+	let fromGrid = false;
+	function closeViewer() {
+		if (fromGrid) return history.back();
+		history.replaceState(null, '', location.pathname + location.search);
+		onHash();
+	}
+
+	window.addEventListener('hashchange', () => {
+		const opening = !lb.classList.contains('open');
+		onHash();
+		if (opening) fromGrid = lb.classList.contains('open');
+	});
 	document.getElementById('lb-prev').onclick = () => go(-1);
 	document.getElementById('lb-next').onclick = () => go(1);
-	document.getElementById('lb-close').onclick = () => { location.hash = 'gallery'; };
+	document.getElementById('lb-close').onclick = closeViewer;
 	// Shares the link to this photo; the number counts in the whole album, so it also works while filtered.
 	document.getElementById('lb-share').onclick = () =>
 		shareLink(document.title, `${location.origin}${location.pathname}#p${photos.indexOf(visible[current]) + 1}`);
@@ -434,7 +455,7 @@ function renderAlbum(data, token) {
 		}
 		if (e.key === 'ArrowLeft') go(-1);
 		if (e.key === 'ArrowRight') go(1);
-		if (e.key === 'Escape') location.hash = 'gallery';
+		if (e.key === 'Escape') closeViewer();
 		if (e.key === ' ') { e.preventDefault(); startShow(); }
 	});
 
@@ -460,13 +481,19 @@ function renderAlbum(data, token) {
 		// Full screen where the browser allows it (not on iPhone); the slideshow runs either way.
 		if (!document.fullscreenElement) lb.requestFullscreen?.().catch(() => {});
 		keepAwake();
-		timer = setInterval(() => go(1), SLIDE_SECONDS * 1000);
+		if (lb.classList.contains('open')) nextSlide();
+	}
+
+	// Each photo stays the full time after it has loaded, so slow wifi never skips photos.
+	function nextSlide() {
+		clearTimeout(timer);
+		timer = setTimeout(() => go(1), SLIDE_SECONDS * 1000);
 	}
 
 	function stopShow() {
 		if (!playing) return;
 		playing = false;
-		clearInterval(timer);
+		clearTimeout(timer);
 		lb.classList.remove('slideshow', 'show-ui');
 		playBtn.innerHTML = `${ICON.play}<span class="download-label">Slideshow</span>`;
 		wakeLock?.release().catch(() => {});

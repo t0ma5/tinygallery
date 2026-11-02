@@ -85,7 +85,8 @@ easy downloads, and private album links you can share with anyone.
   Every choice saves at once; the current album cover is marked in the photo grid.
 - **Open** any photo in the album editor for a quick full-size preview (arrow keys to browse).
 - Search for albums and folders (ignores accents: "seinajoki" finds "Seinäjoki").
-- Site name setting, storage used (with on-demand recount) and photo count.
+- Site name setting, storage used (with on-demand recount) and photo count. A recount also removes files left by
+  uploads that never finished (closed tab, lost connection) once they are a day old.
 
 ---
 
@@ -275,7 +276,8 @@ Download names come from the database, so they survive copies that drop R2 metad
 
 - **Admin login:** password compared via SHA-256 hashes in constant time; session is an HMAC-signed,
   `HttpOnly`, `Secure`, `SameSite=Strict` cookie valid for 30 days. The signing key is derived from the password,
-  so **changing the password logs out every session**. 10 failed logins per IP lock that IP out for 15 minutes.
+  so **changing the password logs out every session**; **Log out on all devices** in the admin does the same without
+  a new password (use it after losing a logged-in phone or laptop). 10 failed logins per IP lock that IP out for 15 minutes.
 - **CSRF:** admin writes require a custom `x-admin` header that cross-site forms cannot send, on top of `SameSite`.
 - **Private folders** are link-only unless you set a password: anyone who has the link can open it and forward it.
   Tokens are 12 random base62 characters (about 71 bits). Use **New link** to revoke, or an expiry date.
@@ -285,7 +287,10 @@ Download names come from the database, so they survive copies that drop R2 metad
   10-per-15-minutes limit per IP. The unlock cookie is HMAC-signed and tied to the current password.
 - **Downloads off** stops the buttons and the server refuses originals, but a determined visitor can still
   save the 2400 px display copy from the page. It is a courtesy, not copy protection.
-- **Favourites** use a random id stored in the visitor's browser; there are no visitor accounts.
+- **Favourites** use a random id stored in the visitor's browser; there are no visitor accounts. A folder takes at most
+  20,000 favourites in total, so a script with the link cannot fill the database.
+- **Headers:** every page sends a Content-Security-Policy (scripts, styles, images and fonts from the site only) and
+  refuses to be shown in frames on other sites (clickjacking).
 - **Photo files** live under 20-character random keys, so they cannot be enumerated.
 - **EXIF:** with **Remove GPS location** on (the default), JPEG originals lose their location before upload;
   all other metadata stays. With it off, originals are stored exactly as uploaded. Display and thumbnail
