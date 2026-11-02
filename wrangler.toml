@@ -7,6 +7,8 @@ compatibility_date = "2026-10-01"
 [vars]
 # Default site name; the admin can change it under "Site name".
 PHOTOGRAPHER = "Tiny Gallery"
+# Source code link in the footer; remove the line to hide the icon.
+REPO_URL = "https://github.com/t0ma5/tinygallery"
 
 [[d1_databases]]
 binding = "DB"

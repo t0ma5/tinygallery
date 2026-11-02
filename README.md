@@ -22,7 +22,13 @@ easy downloads, and private links for clients.
 
 ![Phone screens](docs/screenshots/mobile.jpg)
 
-<!-- Admin panel screenshots: docs/screenshots/admin-*.jpg (to be added) -->
+**Admin panel** at `/admin`:
+
+| Settings and home page | Albums, drag to reorder |
+|---|---|
+| ![Admin settings](docs/screenshots/admin-overview.jpg) | ![Admin albums](docs/screenshots/admin-albums.jpg) |
+| **Client folder: link, password, expiry, downloads, favourites** | **Album: upload, cover, reorder** |
+| ![Admin client folder](docs/screenshots/admin-folder.jpg) | ![Admin album editor](docs/screenshots/admin-album.jpg) |
 
 ---
 
@@ -51,15 +57,28 @@ easy downloads, and private links for clients.
 - **Download** the original with its original file name, from the grid (hover) or the viewer.
 - **Share** button: the device's own share sheet (phones, Safari, Chrome, Edge), copy-link fallback elsewhere.
 - **Link previews** (WhatsApp, Messenger, Slack, ...) with title, description and cover photo.
-- Self-hosted Montserrat font: no Google Fonts, no trackers, no cookies for visitors.
+- Big albums load 100 photos at a time as you scroll.
+- Self-hosted Montserrat font: no Google Fonts, no trackers. Cookies only for unlocking a password-protected folder.
+
+**For clients (in a private folder)**
+- **Favourites:** a heart on each photo and in the viewer, an optional name asked once, and a **♥ N** button
+  that shows only the picked photos. No account needed; picks are kept per browser.
+- Optional **password** and **expiry date** per folder, set by the photographer.
 
 **For the photographer (admin at `/admin`)**
 - One admin account, one password (a Cloudflare secret). No sign-ups, no user management.
 - Albums with title and date, shown on the **home page**, **hidden**, or inside a **private folder**.
+- **Drag to reorder** albums and photos (mouse or touch), and **Sort by date taken** (read from EXIF at upload).
 - Drag-and-drop upload of many photos at once. The browser makes the display (2400 px) and thumbnail (900 px)
-  copies, the original is kept untouched for download.
-- **Private folders** for clients: an unguessable link (`/f/<12 random characters>`), no password,
-  collapsible list, **New link** button to revoke the old one.
+  copies, the original is kept for download.
+- **Remove GPS location** from originals before upload (on by default): blanks the location in EXIF and XMP,
+  keeps the date and everything else.
+- **Private folders** for clients: an unguessable link (`/f/<12 random characters>`), collapsible list,
+  **New link** to revoke, optional **password**, **link expiry date**, and the client's **favourites**
+  (thumbnails, who picked them, and **Copy file names** for your editing software).
+- **Downloads switch** per album and per folder (on by default). Off hides the buttons and stops serving
+  originals, so zoom stays at the display resolution.
+- **Views and downloads** per album, views and favourites per folder (your own visits are not counted).
 - Cover photo chooser for the home page, each folder and each album.
 - Search for albums and folders (ignores accents: "seinajoki" finds "Seinäjoki").
 - Site name setting, storage used (with on-demand recount) and photo count.
@@ -90,7 +109,8 @@ flowchart LR
 | `functions/img/[[path]].js` | Serves photos from R2 at `/img/<key>/<t\|d\|o>` (thumb, display, original), with year-long immutable caching and an edge cache. `?dl` forces a download with the original file name. |
 | `functions/index.js`, `functions/f`, `functions/a` | Return the same HTML shell with Open Graph tags filled in on the server, because chat apps do not run JavaScript. |
 | `lib/` | Shared code: page data and access rules (`data.js`), link previews (`og.js`), sessions and helpers (`util.js`). |
-| **D1** (SQLite) | `albums`, `folders`, `photos`, `settings`, `login_attempts`. See [`schema.sql`](schema.sql). |
+| **D1** (SQLite) | `albums`, `folders`, `photos`, `favorites`, `settings`, `login_attempts`. See [`schema.sql`](schema.sql); upgrades in [`migrations/`](migrations). |
+| `scripts/setup.mjs` | One-command setup on your Cloudflare account. |
 | **R2** | Three files per photo under a random 20-character key: `<key>/o` original, `<key>/d` display JPEG, `<key>/t` thumbnail JPEG. |
 
 ### URLs
@@ -118,6 +138,10 @@ A 22 MB original uploads in a few seconds this way.
 
 - A **public** album opens for everyone.
 - An album in a **private folder** opens only with that folder's token in the URL, otherwise "Not available".
+- A folder with a **password** asks for it first; the right password sets a signed cookie for 30 days.
+  Changing the password locks out everyone who used the old one.
+- After its **expiry date** a folder shows "Link expired".
+- Locked and expired folders never reveal their name or cover, not even in link previews.
 - **Hidden** albums are visible to the admin only.
 - Deleting a folder makes its albums **hidden**, never public, so nothing private leaks onto the home page.
 - The admin can preview any album.
@@ -134,6 +158,21 @@ git clone https://github.com/t0ma5/tinygallery.git
 cd tinygallery
 npx wrangler login
 ```
+
+### One command
+
+```bash
+node scripts/setup.mjs
+```
+
+It asks for a project name, site name and footer link, then creates the D1 database and R2 bucket, writes
+`wrangler.toml`, creates the tables and the Pages project, asks you to type the admin password, and deploys.
+Afterwards open `https://<name>.pages.dev/admin`.
+
+(Cloudflare's "Deploy to Cloudflare" button only supports Workers projects; Tiny Gallery is a Pages project,
+so the script does that job.)
+
+### By hand
 
 1. **Create the database and the bucket.** Use your own names if you like.
    ```bash
@@ -160,7 +199,19 @@ npx wrangler login
    ```
 7. Open `https://<name>.pages.dev/admin`, log in, set the site name, create albums and upload.
 
-To remove the GitHub icon from the footer, set `REPO_URL = ''` at the top of `public/app.js`.
+To remove the GitHub icon from the footer, delete the `REPO_URL` line in `wrangler.toml` and deploy again.
+
+### Updating an existing install
+
+Pull the new code, apply any new file in `migrations/` once, then deploy:
+
+```bash
+npx wrangler d1 execute <database> --remote --file migrations/0002_features.sql
+npx wrangler pages deploy --project-name <name> --branch main
+```
+
+`0002_features.sql` adds ordering, favourites, folder passwords, expiry, view and download counts and the
+download switches to installs created before them.
 
 ---
 
@@ -222,20 +273,29 @@ Download names come from the database, so they survive copies that drop R2 metad
   `HttpOnly`, `Secure`, `SameSite=Strict` cookie valid for 30 days. The signing key is derived from the password,
   so **changing the password logs out every session**. 10 failed logins per IP lock that IP out for 15 minutes.
 - **CSRF:** admin writes require a custom `x-admin` header that cross-site forms cannot send, on top of `SameSite`.
-- **Private folders are link-only**: anyone who has the link can open it and forward it.
-  Tokens are 12 random base62 characters (about 71 bits). Use **New link** to revoke.
+- **Private folders** are link-only unless you set a password: anyone who has the link can open it and forward it.
+  Tokens are 12 random base62 characters (about 71 bits). Use **New link** to revoke, or an expiry date.
   Folder pages send `X-Robots-Tag: noindex` and `Referrer-Policy: no-referrer`.
+- **Folder passwords** are stored as salted PBKDF2-SHA256 hashes (10,000 rounds, kept low to fit the free plan's
+  10 ms CPU per request; fine for gallery passwords, not for account passwords). Wrong tries share the
+  10-per-15-minutes limit per IP. The unlock cookie is HMAC-signed and tied to the current password.
+- **Downloads off** stops the buttons and the server refuses originals, but a determined visitor can still
+  save the 2400 px display copy from the page. It is a courtesy, not copy protection.
+- **Favourites** use a random id stored in the visitor's browser; there are no client accounts.
 - **Photo files** live under 20-character random keys, so they cannot be enumerated.
-- **EXIF:** originals are stored and downloaded exactly as uploaded, **including GPS location** if the camera
-  recorded it. Display and thumbnail copies have no EXIF.
+- **EXIF:** with **Remove GPS location** on (the default), JPEG originals lose their location before upload;
+  all other metadata stays. With it off, originals are stored exactly as uploaded. Display and thumbnail
+  copies never have EXIF. PNG and WebP originals are uploaded as they are.
 
 ---
 
 ## Known limitations
 
 - **HEIC** (iPhone) photos upload only from Safari; other browsers cannot decode them. Export as JPEG first.
-- One admin, no roles, no client accounts or favourites.
-- No photo reordering yet (photos keep upload order) and no ZIP download of a whole album.
+- One admin, no roles, no client accounts. Favourites live in one browser: a client who switches phones starts over.
+- No ZIP download of a whole album.
+- **Sort by date taken** works for JPEGs uploaded with this version or later (older uploads have no stored date).
+- **Remove GPS location** covers JPEG; PNG and WebP rarely carry location and are uploaded unchanged.
 - Interrupted uploads can leave a few orphan files in R2 (they never appear in an album).
 - Storage used is counted on demand (Recount), not live.
 
@@ -245,8 +305,10 @@ Download names come from the database, so they survive copies that drop R2 metad
 
 ```
 tinygallery/
-├── wrangler.toml          Pages config: project name, D1 and R2 bindings, default site name
-├── schema.sql             D1 tables
+├── wrangler.toml          Pages config: project name, D1 and R2 bindings, site name, footer link
+├── schema.sql             D1 tables for a new install
+├── migrations/            schema upgrades for existing installs
+├── scripts/setup.mjs      one-command setup on Cloudflare
 ├── functions/
 │   ├── api/[[path]].js    JSON API (public + admin)
 │   ├── img/[[path]].js    photo files from R2, edge-cached, downloads
@@ -254,9 +316,9 @@ tinygallery/
 │   ├── a/[[path]].js      /a/*     HTML + link-preview tags
 │   └── f/[[path]].js      /f/*     HTML + link-preview tags
 ├── lib/
-│   ├── data.js            page data and access rules
+│   ├── data.js            page data and access rules (folders, passwords, expiry, downloads)
 │   ├── og.js              Open Graph tags
-│   └── util.js            sessions, tokens, JSON helpers
+│   └── util.js            sessions, folder passwords, tokens, JSON helpers
 └── public/
     ├── index.html, app.js     public pages
     ├── admin.html, admin.js   admin panel

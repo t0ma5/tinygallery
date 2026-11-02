@@ -1,9 +1,7 @@
 // Public pages: / (home), /f/<token> (private folder), /a/<slug> and /f/<token>/<slug> (album).
 
-// Source code link in the footer. Set to '' to hide it.
-const REPO_URL = 'https://github.com/t0ma5/tinygallery';
-
 const ICON = {
+	heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>',
 	github: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
 	download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>',
 	close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 6l12 12M18 6L6 18"/></svg>',
@@ -41,12 +39,19 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const img = (key, size) => `/img/${key}/${size}`;
 const app = document.getElementById('app');
 let photographer = '';
+let repo = ''; // REPO_URL in wrangler.toml; empty hides the footer icon
 
 const footer = () => `
 	<footer class="footer">
 		<span>© ${new Date().getFullYear()} ${esc(photographer)}</span>
-		${REPO_URL ? `<a class="footer-repo" href="${REPO_URL}" target="_blank" rel="noopener" title="Source code on GitHub">${ICON.github}</a>` : ''}
+		${repo ? `<a class="footer-repo" href="${esc(repo)}" target="_blank" rel="noopener" title="Source code">${ICON.github}</a>` : ''}
 	</footer>`;
+
+// Browser storage can be blocked (private mode, settings); everything still works, favourites just do not persist.
+const store = {
+	get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+	set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
 
 function formatDate(iso) {
 	if (!iso) return '';
@@ -61,11 +66,13 @@ function fadeIn(root) {
 	});
 }
 
+// Returns the page data, { locked } or { expired } for a closed private folder, or null.
 async function load(url) {
 	const res = await fetch(url, { headers: { accept: 'application/json' } });
-	if (!res.ok) return null;
+	if (!res.ok && res.status !== 401 && res.status !== 410) return null;
 	const data = await res.json();
 	if (data.photographer) photographer = data.photographer;
+	if (data.repo) repo = data.repo;
 	return data;
 }
 
@@ -81,6 +88,100 @@ function renderNotFound() {
 			<h1>Not available</h1>
 			<p>This link is not valid or has been changed.<br>Ask ${esc(photographer)} for a new link.</p>
 		</main>`;
+}
+
+function renderExpired() {
+	document.title = photographer;
+	app.innerHTML = `
+		<main class="notice">
+			<h1>Link expired</h1>
+			<p>This gallery is no longer available.<br>Ask ${esc(photographer)} for a new link.</p>
+		</main>`;
+}
+
+// Password page for a protected folder; a right password sets an unlock cookie and reloads.
+function renderLocked(token) {
+	document.title = photographer;
+	app.innerHTML = `
+		<main class="notice">
+			<form class="login" id="unlock">
+				<h1>Private gallery</h1>
+				<p>Enter the password from ${esc(photographer)}.</p>
+				<input class="field" type="password" id="folder-password" autocomplete="current-password" placeholder="Password" required autofocus>
+				<button class="btn-outline" type="submit">Open</button>
+				<p class="login-error" id="unlock-error"></p>
+			</form>
+		</main>`;
+	document.getElementById('unlock').addEventListener('submit', async e => {
+		e.preventDefault();
+		const res = await fetch(`/api/f/${token}/unlock`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ password: document.getElementById('folder-password').value }),
+		});
+		if (res.ok) return location.reload();
+		document.getElementById('unlock-error').textContent = (await res.json().catch(() => ({}))).error || 'Could not open';
+	});
+}
+
+// Asks once for an optional name, so the photographer knows whose favourites these are.
+function askName() {
+	return new Promise(resolve => {
+		const el = document.createElement('div');
+		el.className = 'modal';
+		el.innerHTML = `
+			<form class="modal-box">
+				<h2>Your name</h2>
+				<p>So ${esc(photographer)} knows whose favourites these are. Optional.</p>
+				<input class="field" maxlength="60" autocomplete="name" placeholder="Name">
+				<div class="row-actions">
+					<button type="button" class="btn-small" data-skip>Skip</button>
+					<button class="btn-small primary">Save</button>
+				</div>
+			</form>`;
+		document.body.appendChild(el);
+		const input = el.querySelector('input');
+		input.focus();
+		const done = name => { el.remove(); resolve(name); };
+		el.querySelector('[data-skip]').onclick = () => done('');
+		el.querySelector('form').onsubmit = e => { e.preventDefault(); done(input.value.trim()); };
+	});
+}
+
+// Favourites of this browser in one folder: a random client id, the chosen photo keys and the name.
+function favoritesFor(token) {
+	let client = store.get('tg-client');
+	if (!client) {
+		client = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[b % 62]).join('');
+		store.set('tg-client', client);
+	}
+	const keys = new Set();
+	return {
+		keys,
+		async load() {
+			const r = await fetch(`/api/f/${token}/favorites?client=${client}`).then(x => x.json()).catch(() => ({ keys: [] }));
+			(r.keys || []).forEach(k => keys.add(k));
+		},
+		async toggle(key) {
+			let name = store.get('tg-name');
+			if (name === null && !keys.has(key)) {
+				name = await askName();
+				store.set('tg-name', name);
+			}
+			const on = !keys.has(key);
+			if (on) keys.add(key); else keys.delete(key);
+			const res = await fetch(`/api/f/${token}/favorites`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ client, key, on, name: name || null }),
+			}).catch(() => null);
+			if (!res || !res.ok) {
+				if (on) keys.delete(key); else keys.add(key);
+				toast('Could not save the favourite');
+			}
+			return keys.has(key);
+		},
+	};
 }
 
 // Full-screen cover: optional title in the middle, the photographer's name at the bottom.
@@ -120,23 +221,28 @@ function renderCollection(data, token) {
 
 /* Album: cover, masonry grid, lightbox */
 
-function renderAlbum(data) {
+function renderAlbum(data, token) {
 	const { album, photos, back } = data;
+	const canDownload = data.downloads !== false;
+	const fav = data.favorites && token ? favoritesFor(token) : null;
 	document.title = `${album.title} · ${photographer}`;
 
 	app.innerHTML = `
 		${coverHtml(album.cover, album.title, formatDate(album.date), photos.length > 0, back)}
 		<header class="header" id="gallery">
 			<a class="header-back" href="${back}" title="All albums">${ICON.prev}<span class="brand-title">${esc(album.title)}</span></a>
+			${fav ? `<button class="fav-filter" id="fav-filter" type="button" title="Show favourites" hidden>${ICON.heart}<span id="fav-count">0</span></button>` : ''}
 		</header>
 		<main class="grid" id="grid"></main>
+		<div id="more"></div>
 		${footer()}
 		<div class="lightbox" id="lightbox" aria-hidden="true">
 			<div class="lightbox-bar">
 				<span class="lightbox-count" id="lb-count"></span>
 				<div>
+					${fav ? `<button class="download-btn fav-btn" id="lb-fav" type="button">${ICON.heart}<span class="download-label">Favourite</span></button>` : ''}
 					<button class="download-btn" id="lb-share" type="button">${ICON.share}<span class="download-label">Share</span></button>
-					<a class="download-btn" id="lb-download" href="#" download>${ICON.download}<span class="download-label">Download</span></a>
+					${canDownload ? `<a class="download-btn" id="lb-download" href="#" download>${ICON.download}<span class="download-label">Download</span></a>` : ''}
 					<button class="icon-btn" id="lb-close" title="Close">${ICON.close}</button>
 				</div>
 			</div>
@@ -148,40 +254,104 @@ function renderAlbum(data) {
 		</div>`;
 
 	const download = p => `${img(p.key, 'o')}?dl`;
-
-	// Masonry: put each photo in the currently shortest column, so reading order stays left to right.
 	const grid = document.getElementById('grid');
+	const more = document.getElementById('more');
+
+	// visible: all photos, or only the favourites while that filter is on. Grid and viewer both use it.
+	let visible = photos;
+	let onlyFavs = false;
+
+	// Masonry: each photo goes into the currently shortest column, so reading order stays left to right.
+	// Big albums render 100 tiles at a time; more are added as the visitor scrolls near the end.
+	const PAGE = 100;
 	let cols = 0;
-	function layout() {
-		const w = window.innerWidth;
-		const n = w < 700 ? 2 : w < 1500 ? 3 : 4;
-		if (n === cols) return;
-		cols = n;
-		const columns = Array.from({ length: n }, () => Object.assign(document.createElement('div'), { className: 'grid-col' }));
-		const heights = new Array(n).fill(0);
-		photos.forEach((p, i) => {
+	let columns = [];
+	let heights = [];
+	let shown = 0;
+
+	function tile(p, i) {
+		const t = document.createElement('a');
+		t.className = 'tile' + (fav?.keys.has(p.key) ? ' is-fav' : '');
+		t.href = `#p${i + 1}`;
+		t.style.aspectRatio = `${p.w} / ${p.h}`;
+		t.innerHTML = `<img src="${img(p.key, 't')}" alt="" loading="lazy">
+			<span class="tile-actions">
+				${fav ? `<span class="icon-btn tile-fav" data-fav="${i}" title="Favourite">${ICON.heart}</span>` : ''}
+				${canDownload ? `<span class="icon-btn" data-download="${i}" title="Download">${ICON.download}</span>` : ''}
+			</span>`;
+		return t;
+	}
+
+	function addTiles(upTo) {
+		for (let i = shown; i < upTo; i++) {
 			const c = heights.indexOf(Math.min(...heights));
-			heights[c] += p.h / p.w;
-			const tile = document.createElement('a');
-			tile.className = 'tile';
-			tile.href = `#p${i + 1}`;
-			tile.style.aspectRatio = `${p.w} / ${p.h}`;
-			tile.innerHTML = `<img src="${img(p.key, 't')}" alt="" loading="lazy">
-				<span class="tile-actions"><span class="icon-btn" data-download="${i}" title="Download">${ICON.download}</span></span>`;
-			columns[c].appendChild(tile);
-		});
-		grid.replaceChildren(...columns);
+			heights[c] += visible[i].h / visible[i].w;
+			columns[c].appendChild(tile(visible[i], i));
+		}
+		shown = upTo;
 		fadeIn(grid);
 	}
-	layout();
-	window.addEventListener('resize', layout);
 
-	// The tile is a link itself, so the download icon cannot be a nested link.
+	function layout(restart = false) {
+		const w = window.innerWidth;
+		const n = w < 700 ? 2 : w < 1500 ? 3 : 4;
+		if (n === cols && !restart) return;
+		cols = n;
+		columns = Array.from({ length: n }, () => Object.assign(document.createElement('div'), { className: 'grid-col' }));
+		heights = new Array(n).fill(0);
+		grid.replaceChildren(...columns);
+		const target = restart ? PAGE : Math.max(shown, PAGE);
+		shown = 0;
+		addTiles(Math.min(target, visible.length));
+	}
+	layout();
+	window.addEventListener('resize', () => layout());
+
+	new IntersectionObserver(entries => {
+		if (entries[0].isIntersecting && shown < visible.length) addTiles(Math.min(shown + PAGE, visible.length));
+	}, { rootMargin: '1500px' }).observe(more);
+
+	// Favourites: hearts on tiles and in the viewer, and a header button that shows only the picked photos.
+	function refreshFavs() {
+		if (!fav) return;
+		const n = photos.filter(p => fav.keys.has(p.key)).length;
+		const filter = document.getElementById('fav-filter');
+		document.getElementById('fav-count').textContent = n;
+		filter.hidden = n === 0 && !onlyFavs;
+		filter.classList.toggle('active', onlyFavs);
+		grid.querySelectorAll('.tile').forEach(t => {
+			const i = Number(t.getAttribute('href').slice(2)) - 1;
+			t.classList.toggle('is-fav', fav.keys.has(visible[i]?.key));
+		});
+		const p = visible[current];
+		document.getElementById('lb-fav')?.classList.toggle('on', !!p && fav.keys.has(p.key));
+	}
+
+	async function toggleFav(p) {
+		await fav.toggle(p.key);
+		refreshFavs();
+	}
+
+	if (fav) {
+		fav.load().then(refreshFavs);
+		document.getElementById('fav-filter').onclick = () => {
+			onlyFavs = !onlyFavs;
+			visible = onlyFavs ? photos.filter(p => fav.keys.has(p.key)) : photos;
+			layout(true);
+			refreshFavs();
+			document.getElementById('gallery').scrollIntoView();
+		};
+		document.getElementById('lb-fav').onclick = () => toggleFav(visible[current]);
+	}
+
+	// The tile is a link itself, so its icons cannot be nested links.
 	grid.addEventListener('click', e => {
 		const dl = e.target.closest('[data-download]');
-		if (!dl) return;
+		const heart = e.target.closest('[data-fav]');
+		if (!dl && !heart) return;
 		e.preventDefault();
-		Object.assign(document.createElement('a'), { href: download(photos[dl.dataset.download]), download: '' }).click();
+		if (heart) return toggleFav(visible[heart.dataset.fav]);
+		Object.assign(document.createElement('a'), { href: download(visible[dl.dataset.download]), download: '' }).click();
 	});
 
 	// Lightbox, driven by the URL hash (#p12) so the phone back button closes it.
@@ -192,22 +362,23 @@ function renderAlbum(data) {
 	let original = null; // key whose original is loading or shown in the viewer
 
 	// Past the display copy's resolution, swap in the original so zoomed detail stays sharp.
+	// Without downloads the original is not served, so zoom stays on the display copy.
 	const zoom = createZoom(stage, view, {
 		onSwipe: d => go(d),
 		onZoom: shownWidth => {
-			const p = photos[current];
-			if (!p || original === p.key || shownWidth * devicePixelRatio <= view.naturalWidth * 1.05) return;
+			const p = visible[current];
+			if (!canDownload || !p || original === p.key || shownWidth * devicePixelRatio <= view.naturalWidth * 1.05) return;
 			original = p.key;
 			const full = new Image();
-			full.onload = () => { if (photos[current] === p) view.src = full.src; };
+			full.onload = () => { if (visible[current] === p) view.src = full.src; };
 			full.src = img(p.key, 'o');
 		},
 	});
 	window.addEventListener('resize', () => zoom.reset());
 
 	function show(i) {
-		current = (i + photos.length) % photos.length;
-		const p = photos[current];
+		current = (i + visible.length) % visible.length;
+		const p = visible[current];
 		const src = img(p.key, 'd');
 		zoom.reset();
 		original = null;
@@ -215,14 +386,16 @@ function renderAlbum(data) {
 		const next = new Image();
 		next.onload = () => { view.src = src; view.classList.remove('fading'); };
 		next.src = src;
-		document.getElementById('lb-count').textContent = `${current + 1} / ${photos.length}`;
-		document.getElementById('lb-download').href = download(p);
-		[current - 1, current + 1].forEach(j => { new Image().src = img(photos[(j + photos.length) % photos.length].key, 'd'); });
+		document.getElementById('lb-count').textContent = `${current + 1} / ${visible.length}`;
+		const dl = document.getElementById('lb-download');
+		if (dl) dl.href = download(p);
+		refreshFavs();
+		[current - 1, current + 1].forEach(j => { new Image().src = img(visible[(j + visible.length) % visible.length].key, 'd'); });
 	}
 
 	function onHash() {
 		const m = location.hash.match(/^#p(\d+)$/);
-		if (m && photos.length) {
+		if (m && visible.length) {
 			if (!lb.classList.contains('open')) {
 				lb.classList.add('open');
 				lb.setAttribute('aria-hidden', 'false');
@@ -238,7 +411,7 @@ function renderAlbum(data) {
 	}
 
 	function go(d) {
-		history.replaceState(null, '', `#p${((current + d + photos.length) % photos.length) + 1}`);
+		history.replaceState(null, '', `#p${((current + d + visible.length) % visible.length) + 1}`);
 		onHash();
 	}
 
@@ -246,8 +419,9 @@ function renderAlbum(data) {
 	document.getElementById('lb-prev').onclick = () => go(-1);
 	document.getElementById('lb-next').onclick = () => go(1);
 	document.getElementById('lb-close').onclick = () => { location.hash = 'gallery'; };
-	// Shares the link to this photo (the #p number opens it straight in the viewer).
-	document.getElementById('lb-share').onclick = () => shareLink(document.title, location.href);
+	// Shares the link to this photo; the number counts in the whole album, so it also works while filtered.
+	document.getElementById('lb-share').onclick = () =>
+		shareLink(document.title, `${location.origin}${location.pathname}#p${photos.indexOf(visible[current]) + 1}`);
 	document.addEventListener('keydown', e => {
 		if (!lb.classList.contains('open')) return;
 		if (e.key === 'ArrowLeft') go(-1);
@@ -408,12 +582,16 @@ async function route() {
 	if ((m = path.match(/^\/f\/([A-Za-z0-9]{12})$/))) {
 		noindex();
 		const data = await load(`/api/f/${m[1]}`);
+		if (data?.locked) return renderLocked(m[1]);
+		if (data?.expired) return renderExpired();
 		return data ? renderCollection(data, m[1]) : renderNotFound();
 	}
 	if ((m = path.match(/^\/f\/([A-Za-z0-9]{12})\/([a-z0-9-]+)$/))) {
 		noindex();
 		const data = await load(`/api/album/${m[2]}?f=${m[1]}`);
-		return data ? renderAlbum(data) : renderNotFound();
+		if (data?.locked) return renderLocked(m[1]);
+		if (data?.expired) return renderExpired();
+		return data ? renderAlbum(data, m[1]) : renderNotFound();
 	}
 	if ((m = path.match(/^\/a\/([a-z0-9-]+)$/))) {
 		const data = await load(`/api/album/${m[1]}`);

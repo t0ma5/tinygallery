@@ -5,7 +5,135 @@ let S = null; // state from /api/admin/state
 const ICON = {
 	folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>',
 	chevron: '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 9l6 6 6-6"/></svg>',
+	grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>',
 };
+
+ICON.heart = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>';
+
+// One line under a folder name: albums, views, favourites, password and expiry at a glance.
+function folderMeta(f, albums) {
+	const today = new Date().toISOString().slice(0, 10);
+	return [
+		plural(albums.length, 'album'),
+		plural(f.views, 'view'),
+		f.favorites && `♥ ${f.favorites}`,
+		f.has_password && 'password',
+		f.expires_at && (f.expires_at < today ? 'expired' : `until ${f.expires_at}`),
+		f.downloads_off && 'downloads off',
+	].filter(Boolean).join(' · ');
+}
+
+const gripHtml ='<span class="drag-handle" title="Drag to reorder">' + ICON.grip + '</span>';
+
+// Drag to reorder the [data-id] children of a list or grid, by their .drag-handle; mouse and touch.
+// onDrop gets the ids in their new order.
+function makeSortable(container, onDrop) {
+	let drag = null;
+	container.addEventListener('pointerdown', e => {
+		const handle = e.target.closest('.drag-handle');
+		const item = handle?.closest('[data-id]');
+		if (!item || item.parentElement !== container) return;
+		e.preventDefault();
+		try { container.setPointerCapture(e.pointerId); } catch {}
+		drag = { item, x: e.clientX, y: e.clientY, moved: false };
+	});
+	container.addEventListener('pointermove', e => {
+		if (!drag) return;
+		if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 5) return;
+		drag.moved = true;
+		drag.item.classList.add('dragging');
+		const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-id]');
+		if (!over || over === drag.item || over.parentElement !== container) return;
+		const r = over.getBoundingClientRect();
+		const after = getComputedStyle(container).display === 'grid'
+			? e.clientX > r.left + r.width / 2
+			: e.clientY > r.top + r.height / 2;
+		container.insertBefore(drag.item, after ? over.nextSibling : over);
+	});
+	const end = () => {
+		if (!drag) return;
+		const moved = drag.moved;
+		drag.item.classList.remove('dragging');
+		drag = null;
+		if (moved) onDrop([...container.children].filter(el => el.dataset.id).map(el => Number(el.dataset.id)));
+	};
+	container.addEventListener('pointerup', end);
+	container.addEventListener('pointercancel', end);
+}
+
+/* JPEG metadata, read and edited in the browser before upload */
+
+// Finds the EXIF block: date taken (DateTimeOriginal) and where the GPS block is. null if there is no EXIF.
+function readExif(buf) {
+	const v = new DataView(buf);
+	if (v.byteLength < 4 || v.getUint16(0) !== 0xffd8) return null;
+	for (let o = 2; o + 10 < v.byteLength;) {
+		const marker = v.getUint16(o);
+		const len = v.getUint16(o + 2);
+		if (marker === 0xffda) break; // image data starts, no more metadata
+		if (marker === 0xffe1 && v.getUint32(o + 4) === 0x45786966) { // "Exif"
+			const t = o + 10; // TIFF header
+			const le = v.getUint16(t) === 0x4949;
+			const u16 = p => v.getUint16(t + p, le);
+			const u32 = p => v.getUint32(t + p, le);
+			// tag -> offset of its 12-byte entry, relative to the TIFF header
+			const ifd = p => {
+				const entries = {};
+				for (let i = 0, n = u16(p); i < n; i++) entries[u16(p + 2 + i * 12)] = p + 2 + i * 12;
+				return entries;
+			};
+			const ifd0 = ifd(u32(4));
+			let taken = null;
+			if (ifd0[0x8769] !== undefined) {
+				const sub = ifd(u32(ifd0[0x8769] + 8));
+				const e = sub[0x9003] ?? sub[0x9004];
+				if (e !== undefined) {
+					const off = u32(e + 8);
+					const s = String.fromCharCode(...new Uint8Array(buf, t + off, 19));
+					if (/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) taken = s.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+				}
+			}
+			return { v, t, le, u16, u32, gps: ifd0[0x8825] ?? null, taken };
+		}
+		o += 2 + len;
+	}
+	return null;
+}
+
+// Blanks the location in place: every GPS entry and its data in the EXIF block, and GPS fields in XMP
+// (Lightroom and phones often write both). Sizes stay the same, so the rest of the file is untouched.
+function stripGps(buf) {
+	const x = readExif(buf);
+	if (x && x.gps !== null) {
+		const { v, t, le, u16, u32 } = x;
+		const SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8, 11: 4, 12: 8 };
+		const gps = u32(x.gps + 8);
+		for (let i = 0, n = u16(gps); i < n; i++) {
+			const e = gps + 2 + i * 12;
+			const bytes = (SIZE[u16(e + 2)] || 1) * u32(e + 4);
+			if (bytes > 4) new Uint8Array(buf, t + u32(e + 8), bytes).fill(0);
+			new Uint8Array(buf, t + e, 12).fill(0);
+		}
+		v.setUint16(t + gps, 0, le);
+	}
+	const v = new DataView(buf);
+	for (let o = 2; o + 4 < v.byteLength;) {
+		const marker = v.getUint16(o);
+		const len = v.getUint16(o + 2);
+		if (marker === 0xffda) break;
+		if (marker === 0xffe1) {
+			const seg = new Uint8Array(buf, o + 4, len - 2);
+			const text = new TextDecoder('latin1').decode(seg);
+			if (text.startsWith('http://ns.adobe.com/xap/1.0/')) {
+				const blanked = text
+					.replace(/exif:GPS\w+="[^"]*"/g, m => ' '.repeat(m.length))
+					.replace(/<exif:GPS(\w+)>[\s\S]*?<\/exif:GPS\1>/g, m => ' '.repeat(m.length));
+				for (let i = 0; i < seg.length; i++) seg[i] = blanked.charCodeAt(i);
+			}
+		}
+		o += 2 + len;
+	}
+}
 
 // Private folders start collapsed; the ones opened stay open while the admin page is open.
 const openFolders = new Set();
@@ -224,6 +352,8 @@ function renderMain() {
 				<button class="btn-small" type="submit">Save</button>
 			</form>
 			<p class="admin-hint" id="storage">${storageLine(S.storage)}</p>
+			<label class="check"><input type="checkbox" id="strip-gps"${S.stripGps ? ' checked' : ''}>
+				Remove GPS location from originals when uploading (JPEG)</label>
 
 			<h2 class="admin-h">Public home page</h2>
 			<div class="folder-row">
@@ -248,13 +378,22 @@ function renderMain() {
 			</form>
 			${S.albums.length ? `<input class="field list-search" id="albums-search" type="search" placeholder="Search albums" value="${esc(queries.albums)}">` : ''}
 			<p class="admin-hint" id="albums-empty" hidden>No albums match.</p>
+			${S.albums.length > 1 ? '<p class="admin-hint">Drag ⠿ to set the order albums appear in.</p>' : ''}
 			<ul class="folder-list" id="albums-list">
 				${S.albums.map(a => `
-					<li class="album-row" data-search="${esc(searchText(`${a.title} ${a.date || ''} ${whereLabel(a)}`))}">
+					<li class="album-row" data-id="${a.id}" data-search="${esc(searchText(`${a.title} ${a.date || ''} ${whereLabel(a)}`))}">
+						${gripHtml}
 						<a class="album-thumb" href="#album/${a.id}">${a.cover ? `<img src="${img(a.cover, 't')}" alt="">` : ''}</a>
 						<div class="folder-info">
 							<a class="folder-name" href="#album/${a.id}">${esc(a.title)}</a>
-							<span class="folder-meta">${a.date ? `${esc(a.date)} · ` : ''}${plural(a.count, 'photo')} · ${esc(whereLabel(a))}</span>
+							<span class="folder-meta">${[
+								a.date && esc(a.date),
+								plural(a.count, 'photo'),
+								esc(whereLabel(a)),
+								plural(a.views, 'view'),
+								plural(a.downloads, 'download'),
+								a.downloads_off && 'downloads off',
+							].filter(Boolean).join(' · ')}</span>
 						</div>
 						<div class="row-actions">
 							<a class="btn-small" href="#album/${a.id}">Edit</a>
@@ -264,7 +403,7 @@ function renderMain() {
 			</ul>
 
 			<h2 class="admin-h">Private folders</h2>
-			<p class="admin-hint">Clients see the folder name on the cover of their link, so name it for them. Anyone with a folder link can open it, no password. Put albums in a folder from the album's settings.</p>
+			<p class="admin-hint">Clients see the folder name on the cover of their link, so name it for them. Anyone with a folder link can open it, unless you set a password. Put albums in a folder from the album's settings.</p>
 			${S.folders.length ? `<input class="field list-search" id="folders-search" type="search" placeholder="Search folders or their albums" value="${esc(queries.folders)}">` : ''}
 			<p class="admin-hint" id="folders-empty" hidden>No folders match.</p>
 			<ul class="folder-list" id="folders-list">
@@ -276,7 +415,7 @@ function renderMain() {
 						<button type="button" class="folder-toggle" aria-expanded="${open}">
 							<span class="folder-info">
 								<span class="folder-name">${ICON.folder}${esc(f.title)}</span>
-								<span class="folder-meta">${plural(albums.length, 'album')}</span>
+								<span class="folder-meta">${folderMeta(f, albums)}</span>
 							</span>
 							${ICON.chevron}
 						</button>
@@ -289,6 +428,19 @@ function renderMain() {
 							<button class="btn-small" data-act="relink" title="The old link stops working">New link</button>
 							<button class="btn-small danger" data-act="delete">Delete</button>
 						</div>
+						<div class="folder-settings">
+							<span class="setting">Password: <b>${f.has_password ? 'on' : 'off'}</b>
+								<button type="button" class="link-btn" data-act="password">${f.has_password ? 'Change' : 'Set'}</button>
+								${f.has_password ? '<button type="button" class="link-btn" data-act="nopassword">Remove</button>' : ''}</span>
+							<label class="setting">Link works until
+								<input class="field date-field" type="date" data-setting="expires_at" value="${esc(f.expires_at || '')}">
+								${f.expires_at ? '<button type="button" class="link-btn" data-act="noexpiry">No expiry</button>' : ''}</label>
+							<label class="setting"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
+						</div>
+						${f.favorites ? `<details class="favorites" data-favorites="${f.id}">
+							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked by the client <small>Show</small></summary>
+							<div class="fav-list">Loading…</div>
+						</details>` : ''}
 						${coverPicker('folder', f.id, f.cover_photo_id, albums)}
 						</div>
 					</li>`;
@@ -343,8 +495,70 @@ function renderMain() {
 				if (!confirm(`Delete folder "${f.title}"? Its albums become hidden (not deleted).`)) return;
 				await api(`folders/${id}`, { method: 'DELETE' });
 			}
+			if (btn.dataset.act === 'password') {
+				const password = prompt(`Password for "${f.title}" (at least 4 characters). Clients who opened the old one must enter the new one.`);
+				if (password === null) return;
+				await api(`folders/${id}`, { method: 'PATCH', body: { password } });
+				toast('Password set');
+			}
+			if (btn.dataset.act === 'nopassword') {
+				if (!confirm(`Remove the password? Anyone with the link can open "${f.title}" again.`)) return;
+				await api(`folders/${id}`, { method: 'PATCH', body: { password: null } });
+			}
+			if (btn.dataset.act === 'noexpiry') await api(`folders/${id}`, { method: 'PATCH', body: { expires_at: null } });
 			await refresh();
 		});
+	});
+
+	// Expiry date and the downloads switch save as soon as they change.
+	app.querySelectorAll('[data-setting]').forEach(input => {
+		const id = Number(input.closest('[data-folder]').dataset.folder);
+		input.onchange = () => run(async () => {
+			const body = input.dataset.setting === 'downloads'
+				? { downloads_off: !input.checked }
+				: { expires_at: input.value || null };
+			await api(`folders/${id}`, { method: 'PATCH', body });
+			await refresh();
+			toast('Saved');
+		});
+	});
+
+	// Favourites load when opened: thumbnails with who picked them, and the file names to copy for editing.
+	app.querySelectorAll('[data-favorites]').forEach(box => {
+		box.addEventListener('toggle', () => {
+			if (!box.open || box.dataset.loaded) return;
+			box.dataset.loaded = '1';
+			run(async () => {
+				const { photos } = await api(`folders/${box.dataset.favorites}/favorites`);
+				box.querySelector('.fav-list').innerHTML = `
+					<div class="fav-grid">
+						${photos.map(p => `
+							<figure>
+								<img src="${img(p.key, 't')}" alt="" loading="lazy">
+								<figcaption>${esc(p.name)}<br><small>${esc(p.album)} · ${esc(p.clients)}</small></figcaption>
+							</figure>`).join('')}
+					</div>
+					<button type="button" class="btn-small" data-copy-names>Copy file names</button>`;
+				box.querySelector('[data-copy-names]').onclick = async e => {
+					const names = photos.map(p => p.name).join('\n');
+					try { await navigator.clipboard.writeText(names); e.target.textContent = 'Copied'; } catch { prompt('File names', names); }
+				};
+			});
+		});
+	});
+
+	const albumsList = document.getElementById('albums-list');
+	makeSortable(albumsList, ids => run(async () => {
+		await api('albums/order', { method: 'PUT', body: { ids } });
+		ids.forEach((albumId, i) => { S.albums.find(a => a.id === albumId).sort = i + 1; });
+		S.albums.sort((x, y) => x.sort - y.sort);
+		toast('Order saved');
+	}));
+
+	document.getElementById('strip-gps').onchange = e => run(async () => {
+		await api('strip-gps', { method: 'PUT', body: { on: e.target.checked } });
+		S.stripGps = e.target.checked;
+		toast('Saved');
 	});
 
 	document.getElementById('new-album').addEventListener('submit', e => {
@@ -418,6 +632,8 @@ async function renderAlbum(id) {
 				<input class="field" id="date" type="date" value="${esc(a.date || '')}">
 				<label class="label" for="where">Shown on</label>
 				${whereSelect('where', whereValue(a))}
+				<label class="check"><input type="checkbox" id="downloads"${a.downloads_off ? '' : ' checked'}> Allow downloads
+					<small>(off also stops full-resolution zoom)</small></label>
 				<div class="row-actions">
 					<button class="btn-small" type="submit">Save</button>
 					<a class="btn-small" href="${albumUrl(a)}" target="_blank" rel="noopener">Open album</a>
@@ -430,7 +646,8 @@ async function renderAlbum(id) {
 				<span>Drop photos here or click to choose</span>
 				<small id="progress">JPEG, PNG or WebP. Originals are kept for download.</small>
 			</label>
-			<p class="admin-hint">Click a photo's "Cover" to use it as the album cover.</p>
+			<p class="admin-hint">Click a photo's "Cover" to use it as the album cover. Drag ⠿ to reorder.
+				<button type="button" class="link-btn" id="sort-taken">Sort by date taken</button></p>
 			<div class="photo-grid" id="photos"></div>
 
 			<h2 class="admin-h">Danger zone</h2>
@@ -442,8 +659,9 @@ async function renderAlbum(id) {
 	let coverId = a.cover_photo_id || photos[0]?.id;
 
 	const cell = p => `
-		<div class="photo-cell${p.id === coverId ? ' selected' : ''}" data-photo="${p.id}">
+		<div class="photo-cell${p.id === coverId ? ' selected' : ''}" data-photo="${p.id}" data-id="${p.id}">
 			<img src="${img(p.key, 't')}" alt="" loading="lazy">
+			${gripHtml}
 			<div class="photo-actions">
 				<button class="btn-small" data-cover>Cover</button>
 				<button class="btn-small danger" data-delete>Delete</button>
@@ -451,6 +669,26 @@ async function renderAlbum(id) {
 		</div>`;
 	grid.innerHTML = photos.map(cell).join('');
 	const updateCount = () => { document.getElementById('count').textContent = plural(grid.children.length, 'photo'); };
+
+	const saveOrder = ids => api(`albums/${id}/order`, { method: 'PUT', body: { ids } });
+	makeSortable(grid, ids => run(async () => {
+		await saveOrder(ids);
+		toast('Order saved');
+	}));
+
+	// Oldest first by EXIF date taken; photos without a date keep their order at the end.
+	document.getElementById('sort-taken').onclick = () => run(async () => {
+		const byId = new Map(photos.map(p => [p.id, p]));
+		const current = [...grid.children].map(el => Number(el.dataset.id));
+		const dated = current.filter(pid => byId.get(pid)?.taken_at);
+		if (!dated.length) return toast('No dates found. Dates are read from JPEG photos uploaded from now on.');
+		if (!confirm('Sort the photos by date taken? This replaces the current order.')) return;
+		dated.sort((x, y) => byId.get(x).taken_at.localeCompare(byId.get(y).taken_at));
+		const ids = [...dated, ...current.filter(pid => !byId.get(pid)?.taken_at)];
+		await saveOrder(ids);
+		ids.forEach(pid => grid.appendChild(grid.querySelector(`[data-id="${pid}"]`)));
+		toast('Sorted by date taken');
+	});
 
 	grid.addEventListener('click', e => {
 		const c = e.target.closest('.photo-cell');
@@ -478,6 +716,7 @@ async function renderAlbum(id) {
 				body: {
 					title: document.getElementById('title').value,
 					date: document.getElementById('date').value,
+					downloads_off: !document.getElementById('downloads').checked,
 					...parseWhere(document.getElementById('where').value),
 				},
 			});
@@ -515,6 +754,7 @@ async function renderAlbum(id) {
 			progress.textContent = `Uploading ${i + 1} / ${files.length}: ${file.name}`;
 			try {
 				const p = await uploadOne(id, file);
+				photos.push(p);
 				if (!coverId) coverId = p.id;
 				grid.insertAdjacentHTML('beforeend', cell(p));
 				updateCount();
@@ -582,11 +822,27 @@ async function uploadOne(albumId, file) {
 	const thumb = await resize(bitmap, 900, 0.82);
 	bitmap.close();
 
+	// JPEG originals: read the date taken (for "Sort by date taken") and, if the setting is on, remove the location.
+	let original = file;
+	let taken = null;
+	if (file.type === 'image/jpeg') {
+		const buf = await file.arrayBuffer();
+		try {
+			taken = readExif(buf)?.taken || null;
+			if (S.stripGps) {
+				stripGps(buf);
+				original = new Blob([buf], { type: file.type });
+			}
+		} catch {
+			// Unusual metadata layout: upload unchanged rather than risk a broken file.
+		}
+	}
+
 	const { key } = await api(`albums/${albumId}/photos`, { method: 'POST' });
 	await putFile(key, 't', thumb);
 	await putFile(key, 'd', display);
-	await putFile(key, 'o', file, file.name);
-	return api(`albums/${albumId}/photos/${key}`, { method: 'POST', body: { w, h } });
+	await putFile(key, 'o', original, file.name);
+	return api(`albums/${albumId}/photos/${key}`, { method: 'POST', body: { w, h, taken_at: taken } });
 }
 
 /* Routing */
