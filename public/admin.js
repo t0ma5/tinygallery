@@ -403,7 +403,7 @@ function renderMain() {
 			</ul>
 
 			<h2 class="admin-h">Private folders</h2>
-			<p class="admin-hint">Clients see the folder name on the cover of their link, so name it for them. Anyone with a folder link can open it, unless you set a password. Put albums in a folder from the album's settings.</p>
+			<p class="admin-hint">People you share a folder with see its name on the cover, so name it for them. Anyone with a folder link can open it, unless you set a password. Put albums in a folder from the album's settings.</p>
 			${S.folders.length ? `<input class="field list-search" id="folders-search" type="search" placeholder="Search folders or their albums" value="${esc(queries.folders)}">` : ''}
 			<p class="admin-hint" id="folders-empty" hidden>No folders match.</p>
 			<ul class="folder-list" id="folders-list">
@@ -438,7 +438,7 @@ function renderMain() {
 							<label class="setting"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
 						</div>
 						${f.favorites ? `<details class="favorites" data-favorites="${f.id}">
-							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked by the client <small>Show</small></summary>
+							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
 							<div class="fav-list">Loading…</div>
 						</details>` : ''}
 						${coverPicker('folder', f.id, f.cover_photo_id, albums)}
@@ -447,7 +447,7 @@ function renderMain() {
 				}).join('')}
 			</ul>
 			<form class="inline-form" id="new-folder">
-				<input class="field" id="folder-title" placeholder="New folder, e.g. client name" maxlength="120" required>
+				<input class="field" id="folder-title" placeholder="New folder, e.g. a name or an event" maxlength="120" required>
 				<button class="btn-small" type="submit">Create folder</button>
 			</form>
 		</main>`;
@@ -496,7 +496,7 @@ function renderMain() {
 				await api(`folders/${id}`, { method: 'DELETE' });
 			}
 			if (btn.dataset.act === 'password') {
-				const password = prompt(`Password for "${f.title}" (at least 4 characters). Clients who opened the old one must enter the new one.`);
+				const password = prompt(`Password for "${f.title}" (at least 4 characters). Anyone who opened it with the old one must enter the new one.`);
 				if (password === null) return;
 				await api(`folders/${id}`, { method: 'PATCH', body: { password } });
 				toast('Password set');

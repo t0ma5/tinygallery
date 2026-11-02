@@ -5,16 +5,16 @@ Pages for the site, Pages Functions for the API, **D1** for the database and **R
 No framework, no build step, no npm dependencies: about 3,300 lines of plain JavaScript, HTML and CSS.
 
 Minimal dark design: full-screen covers, a masonry grid, a clean photo viewer,
-easy downloads, and private links for clients.
+easy downloads, and private album links you can share with anyone.
 
 **Live demo:** <https://tinygallery.pages.dev/>
-**Private client folder (demo):** <https://tinygallery.pages.dev/f/RtcvX8TEzivg>
+**Private folder (demo):** <https://tinygallery.pages.dev/f/RtcvX8TEzivg>
 
 ![Home page with full-screen cover](docs/screenshots/home.jpg)
 
-| Albums on the home page | Private client folder |
+| Albums on the home page | Private folder |
 |---|---|
-| ![Album cards](docs/screenshots/home-albums.jpg) | ![Client folder cover](docs/screenshots/folder.jpg) |
+| ![Album cards](docs/screenshots/home-albums.jpg) | ![Private folder cover](docs/screenshots/folder.jpg) |
 | **Album grid** | **Photo viewer with share, download and zoom** |
 | ![Album grid](docs/screenshots/album.jpg) | ![Photo viewer](docs/screenshots/viewer.jpg) |
 
@@ -27,8 +27,8 @@ easy downloads, and private links for clients.
 | Settings and home page | Albums, drag to reorder |
 |---|---|
 | ![Admin settings](docs/screenshots/admin-overview.jpg) | ![Admin albums](docs/screenshots/admin-albums.jpg) |
-| **Client folder: link, password, expiry, downloads, favourites** | **Album: upload, cover, reorder** |
-| ![Admin client folder](docs/screenshots/admin-folder.jpg) | ![Admin album editor](docs/screenshots/admin-album.jpg) |
+| **Private folder: link, password, expiry, downloads, favourites** | **Album: upload, cover, reorder** |
+| ![Admin private folder](docs/screenshots/admin-folder.jpg) | ![Admin album editor](docs/screenshots/admin-album.jpg) |
 
 ---
 
@@ -60,7 +60,7 @@ easy downloads, and private links for clients.
 - Big albums load 100 photos at a time as you scroll.
 - Self-hosted Montserrat font: no Google Fonts, no trackers. Cookies only for unlocking a password-protected folder.
 
-**For clients (in a private folder)**
+**For people you share a private folder with**
 - **Favourites:** a heart on each photo and in the viewer, an optional name asked once, and a **♥ N** button
   that shows only the picked photos. No account needed; picks are kept per browser.
 - Optional **password** and **expiry date** per folder, set by the photographer.
@@ -73,8 +73,8 @@ easy downloads, and private links for clients.
   copies, the original is kept for download.
 - **Remove GPS location** from originals before upload (on by default): blanks the location in EXIF and XMP,
   keeps the date and everything else.
-- **Private folders** for clients: an unguessable link (`/f/<12 random characters>`), collapsible list,
-  **New link** to revoke, optional **password**, **link expiry date**, and the client's **favourites**
+- **Private folders** to share with clients, friends or family: an unguessable link (`/f/<12 random characters>`), collapsible list,
+  **New link** to revoke, optional **password**, **link expiry date**, and the **favourites** people picked
   (thumbnails, who picked them, and **Copy file names** for your editing software).
 - **Downloads switch** per album and per folder (on by default). Off hides the buttons and stops serving
   originals, so zoom stays at the display resolution.
@@ -252,7 +252,7 @@ serving photos straight from R2 on a custom domain avoids function requests for 
 
 ## Custom domain and moving accounts
 
-Use your own domain (Pages project → Custom domains) **before** sharing many client links.
+Use your own domain (Pages project → Custom domains) **before** sharing many private links.
 `*.pages.dev` names belong to one project in one account, so moving to another account would break every
 shared `pages.dev` link. With your own domain, a move is:
 
@@ -281,7 +281,7 @@ Download names come from the database, so they survive copies that drop R2 metad
   10-per-15-minutes limit per IP. The unlock cookie is HMAC-signed and tied to the current password.
 - **Downloads off** stops the buttons and the server refuses originals, but a determined visitor can still
   save the 2400 px display copy from the page. It is a courtesy, not copy protection.
-- **Favourites** use a random id stored in the visitor's browser; there are no client accounts.
+- **Favourites** use a random id stored in the visitor's browser; there are no visitor accounts.
 - **Photo files** live under 20-character random keys, so they cannot be enumerated.
 - **EXIF:** with **Remove GPS location** on (the default), JPEG originals lose their location before upload;
   all other metadata stays. With it off, originals are stored exactly as uploaded. Display and thumbnail
@@ -292,7 +292,7 @@ Download names come from the database, so they survive copies that drop R2 metad
 ## Known limitations
 
 - **HEIC** (iPhone) photos upload only from Safari; other browsers cannot decode them. Export as JPEG first.
-- One admin, no roles, no client accounts. Favourites live in one browser: a client who switches phones starts over.
+- One admin, no roles, no visitor accounts. Favourites live in one browser: someone who switches phones starts over.
 - No ZIP download of a whole album.
 - **Sort by date taken** works for JPEGs uploaded with this version or later (older uploads have no stored date).
 - **Remove GPS location** covers JPEG; PNG and WebP rarely carry location and are uploaded unchanged.
