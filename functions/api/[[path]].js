@@ -4,7 +4,7 @@ import {
 	hashFolderPassword, folderPasswordMatches, folderCookie, tooManyAttempts, recordFailedAttempt,
 } from '../../lib/util.js';
 
-import { homeData, folderData, albumData, openFolder, siteName, ALBUM_SQL, ALBUM_ORDER } from '../../lib/data.js';
+import { homeData, homeCoverPhotos, folderData, albumData, openFolder, siteName, ALBUM_SQL, ALBUM_ORDER } from '../../lib/data.js';
 
 const MB = 1024 * 1024;
 
@@ -131,9 +131,11 @@ async function admin(path, request, env) {
 	if (res === 'upload' && method === 'PUT') return putFile(request, env, rawId, sub);
 
 	if (res === 'state' && method === 'GET') return state(env);
-	if (res === 'home-cover' && method === 'PUT') {
-		const { photo_id } = await request.json();
-		await setSetting(env, 'home_cover', String(Number(photo_id) || ''));
+	// Up to 5 home cover photos; the home page shows one of them at random on each visit.
+	if (res === 'home-covers' && method === 'PUT') {
+		const { ids } = await request.json();
+		if (!Array.isArray(ids) || ids.length > 5) return fail('Choose up to 5 cover photos');
+		await setSetting(env, 'home_covers', JSON.stringify([...new Set(ids.map(Number).filter(Boolean))]));
 		return json({ ok: true });
 	}
 	if (res === 'storage' && method === 'POST') return recountStorage(env);
@@ -202,7 +204,7 @@ async function state(env) {
 		env.DB.prepare(`SELECT id, key, album_id FROM (
 			SELECT id, key, album_id, ROW_NUMBER() OVER (PARTITION BY album_id ORDER BY sort, id) AS rn FROM photos
 		) WHERE rn <= 12`).all(),
-		env.DB.prepare(`SELECT key, value FROM settings WHERE key IN ('home_cover', 'storage', 'strip_gps')`).all(),
+		env.DB.prepare(`SELECT key, value FROM settings WHERE key IN ('storage', 'strip_gps')`).all(),
 		env.DB.prepare('SELECT COUNT(*) AS n FROM photos').first(),
 	]);
 	const setting = k => settings.results.find(r => r.key === k)?.value;
@@ -210,7 +212,8 @@ async function state(env) {
 		photographer: await siteName(env),
 		storage: setting('storage') ? JSON.parse(setting('storage')) : null,
 		photoCount: photoCount.n,
-		homeCover: Number(setting('home_cover')) || null,
+		// Chosen home covers that are still in public albums, with keys so the picker can always show them.
+		homeCovers: await homeCoverPhotos(env),
 		// On unless the admin turned it off.
 		stripGps: setting('strip_gps') !== '0',
 		folders: folders.results,

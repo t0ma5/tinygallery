@@ -1,6 +1,8 @@
 // Public pages: / (home), /f/<token> (private folder), /a/<slug> and /f/<token>/<slug> (album).
 
 const ICON = {
+	play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
+	pause: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8.5 5.5v13M15.5 5.5v13"/></svg>',
 	heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>',
 	github: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
 	download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>',
@@ -241,6 +243,7 @@ function renderAlbum(data, token) {
 				<span class="lightbox-count" id="lb-count"></span>
 				<div>
 					${fav ? `<button class="download-btn fav-btn" id="lb-fav" type="button">${ICON.heart}<span class="download-label">Favourite</span></button>` : ''}
+					<button class="download-btn" id="lb-play" type="button" title="Slideshow">${ICON.play}<span class="download-label">Slideshow</span></button>
 					<button class="download-btn" id="lb-share" type="button">${ICON.share}<span class="download-label">Share</span></button>
 					${canDownload ? `<a class="download-btn" id="lb-download" href="#" download>${ICON.download}<span class="download-label">Download</span></a>` : ''}
 					<button class="icon-btn" id="lb-close" title="Close">${ICON.close}</button>
@@ -403,6 +406,7 @@ function renderAlbum(data, token) {
 			}
 			show(Number(m[1]) - 1);
 		} else if (lb.classList.contains('open')) {
+			stopShow();
 			zoom.reset();
 			lb.classList.remove('open');
 			lb.setAttribute('aria-hidden', 'true');
@@ -424,9 +428,73 @@ function renderAlbum(data, token) {
 		shareLink(document.title, `${location.origin}${location.pathname}#p${photos.indexOf(visible[current]) + 1}`);
 	document.addEventListener('keydown', e => {
 		if (!lb.classList.contains('open')) return;
+		if (playing && (e.key === 'Escape' || e.key === ' ')) {
+			e.preventDefault();
+			return stopShow();
+		}
 		if (e.key === 'ArrowLeft') go(-1);
 		if (e.key === 'ArrowRight') go(1);
 		if (e.key === 'Escape') location.hash = 'gallery';
+		if (e.key === ' ') { e.preventDefault(); startShow(); }
+	});
+
+	// Slideshow: full screen, a new photo every few seconds, looping until stopped, screen kept awake.
+	// Meant to run unattended, for example on a TV at a party. Follows the favourites filter.
+	const SLIDE_SECONDS = 5;
+	const playBtn = document.getElementById('lb-play');
+	let playing = false;
+	let timer = null;
+	let wakeLock = null;
+	let hideUi = null;
+
+	async function keepAwake() {
+		try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+	}
+
+	function startShow() {
+		if (playing || !visible.length) return;
+		playing = true;
+		if (!lb.classList.contains('open')) location.hash = `p${current >= 0 ? current + 1 : 1}`;
+		lb.classList.add('slideshow');
+		playBtn.innerHTML = `${ICON.pause}<span class="download-label">Pause</span>`;
+		// Full screen where the browser allows it (not on iPhone); the slideshow runs either way.
+		if (!document.fullscreenElement) lb.requestFullscreen?.().catch(() => {});
+		keepAwake();
+		timer = setInterval(() => go(1), SLIDE_SECONDS * 1000);
+	}
+
+	function stopShow() {
+		if (!playing) return;
+		playing = false;
+		clearInterval(timer);
+		lb.classList.remove('slideshow', 'show-ui');
+		playBtn.innerHTML = `${ICON.play}<span class="download-label">Slideshow</span>`;
+		wakeLock?.release().catch(() => {});
+		wakeLock = null;
+		if (document.fullscreenElement === lb) document.exitFullscreen().catch(() => {});
+	}
+
+	playBtn.onclick = () => (playing ? stopShow() : startShow());
+	// A tap or click anywhere on the photo stops it; the buttons keep their own action.
+	lb.addEventListener('pointerdown', e => {
+		if (playing && !e.target.closest('button, a')) {
+			e.stopPropagation();
+			stopShow();
+		}
+	}, true);
+	// The controls stay hidden while it plays and appear for a moment when the mouse moves.
+	lb.addEventListener('mousemove', () => {
+		if (!playing) return;
+		lb.classList.add('show-ui');
+		clearTimeout(hideUi);
+		hideUi = setTimeout(() => lb.classList.remove('show-ui'), 2500);
+	});
+	document.addEventListener('fullscreenchange', () => {
+		if (playing && !document.fullscreenElement) stopShow();
+	});
+	// The browser drops the wake lock when the tab is hidden; take it again on return.
+	document.addEventListener('visibilitychange', () => {
+		if (playing && document.visibilityState === 'visible') keepAwake();
 	});
 
 	onHash();

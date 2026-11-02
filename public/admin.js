@@ -298,41 +298,102 @@ function storageLine(storage) {
 
 /* Cover chooser for the home page or a folder */
 
-function coverPicker(kind, id, currentId, albums) {
-	const picks = albums.flatMap(a => a.picks);
-	if (!picks.length) return '<p class="admin-hint cover-picker">Add photos to its albums to choose a cover.</p>';
-	const current = picks.find(p => p.id === currentId) || picks[0];
+// The home page takes up to this many covers and shows one at random on each visit.
+const HOME_COVERS = 5;
+
+// Drops repeated photos (by id), keeping the first: chosen covers first, then the albums' photos.
+const uniquePhotos = list => [...new Map(list.map(p => [p.id, p])).values()];
+
+// Cover chooser: kind 'home' (several), 'folder' or 'album' (one). Every pick saves at once.
+function coverPicker(kind, id, selectedIds, picks) {
+	if (!picks.length) return '<p class="admin-hint cover-picker">Add photos to choose a cover.</p>';
+	const multi = kind === 'home';
+	const selected = new Set(selectedIds.filter(Boolean));
+	if (!multi && !selected.size) selected.add(picks[0].id);
+	const shown = picks.find(p => selected.has(p.id)) || picks[0];
 	return `
 		<details class="cover-picker" data-kind="${kind}" data-id="${id}">
-			<summary><img src="${img(current.key, 't')}" alt=""><span>Cover photo</span><small>Change</small></summary>
+			<summary><img src="${img(shown.key, 't')}" alt="">
+				<span>${multi ? 'Cover photos' : 'Cover photo'}</span>
+				${multi ? `<em class="cover-count">${selected.size} of ${HOME_COVERS}, one at random on each visit</em>` : ''}
+				<small>Change</small></summary>
 			<div class="cover-thumbs">
 				${picks.map(p => `
-					<button type="button" class="cover-thumb${p.id === current.id ? ' selected' : ''}" data-photo="${p.id}" data-key="${p.key}">
+					<button type="button" class="cover-thumb${selected.has(p.id) ? ' selected' : ''}" data-photo="${p.id}" data-key="${p.key}">
 						<img src="${img(p.key, 't')}" alt="" loading="lazy">
 					</button>`).join('')}
 			</div>
 		</details>`;
 }
 
-function bindCoverPickers() {
+// onAlbumCover: lets the album editor update its photo grid when the cover changes.
+function bindCoverPickers(onAlbumCover) {
 	app.querySelectorAll('.cover-picker').forEach(picker => {
 		picker.addEventListener('click', e => {
 			const thumb = e.target.closest('.cover-thumb');
 			if (!thumb) return;
 			run(async () => {
 				const photoId = Number(thumb.dataset.photo);
-				if (picker.dataset.kind === 'home') {
-					await api('home-cover', { method: 'PUT', body: { photo_id: photoId } });
-					S.homeCover = photoId;
-				} else {
+				const kind = picker.dataset.kind;
+				if (kind === 'home') {
+					// Toggle in or out of the set; the summary shows the first chosen one.
+					const ids = new Set(S.homeCovers.map(c => c.id));
+					if (ids.has(photoId)) ids.delete(photoId);
+					else if (ids.size >= HOME_COVERS) return toast(`Up to ${HOME_COVERS} cover photos. Remove one first.`);
+					else ids.add(photoId);
+					await api('home-covers', { method: 'PUT', body: { ids: [...ids] } });
+					S.homeCovers = [...ids].map(pid => S.homeCovers.find(c => c.id === pid) || { id: pid, key: thumb.dataset.key });
+					thumb.classList.toggle('selected', ids.has(photoId));
+					picker.querySelector('.cover-count').textContent = `${ids.size} of ${HOME_COVERS}, one at random on each visit`;
+					const first = picker.querySelector('.cover-thumb.selected') || picker.querySelector('.cover-thumb');
+					picker.querySelector('summary img').src = img(first.dataset.key, 't');
+					return toast(ids.size ? 'Home covers saved' : 'No cover chosen: the first album\'s cover is used');
+				}
+				if (kind === 'folder') {
 					await api(`folders/${picker.dataset.id}`, { method: 'PATCH', body: { cover_photo_id: photoId } });
 					folderOf(Number(picker.dataset.id)).cover_photo_id = photoId;
+				} else {
+					await api(`albums/${picker.dataset.id}`, { method: 'PATCH', body: { cover_photo_id: photoId } });
+					onAlbumCover?.(photoId);
 				}
 				picker.querySelectorAll('.cover-thumb').forEach(b => b.classList.toggle('selected', b === thumb));
 				picker.querySelector('summary img').src = img(thumb.dataset.key, 't');
+				toast('Cover saved');
 			});
 		});
 	});
+}
+
+// Quick look at a photo (display size) from the album editor; arrow keys move, Esc or a click closes.
+function previewPhotos(photos, start) {
+	let i = start;
+	const el = document.createElement('div');
+	el.className = 'modal preview';
+	const show = () => {
+		const p = photos[i];
+		el.innerHTML = `
+			<figure>
+				<img src="${img(p.key, 'd')}" alt="">
+				<figcaption>${esc(p.name)} · ${i + 1} / ${photos.length}</figcaption>
+			</figure>
+			<button type="button" class="preview-nav prev" data-step="-1" title="Previous">‹</button>
+			<button type="button" class="preview-nav next" data-step="1" title="Next">›</button>`;
+	};
+	const close = () => { el.remove(); document.removeEventListener('keydown', onKey); };
+	const step = d => { i = (i + d + photos.length) % photos.length; show(); };
+	const onKey = e => {
+		if (e.key === 'Escape') close();
+		if (e.key === 'ArrowLeft') step(-1);
+		if (e.key === 'ArrowRight') step(1);
+	};
+	el.addEventListener('click', e => {
+		const nav = e.target.closest('[data-step]');
+		if (nav) step(Number(nav.dataset.step));
+		else close();
+	});
+	document.addEventListener('keydown', onKey);
+	show();
+	document.body.appendChild(el);
 }
 
 /* Main page */
@@ -366,7 +427,7 @@ function renderMain() {
 					<button class="btn-small" data-copy>Copy link</button>
 					<a class="btn-small" href="/" target="_blank" rel="noopener">Open</a>
 				</div>
-				${coverPicker('home', 0, S.homeCover, publicAlbums)}
+				${coverPicker('home', 0, S.homeCovers.map(c => c.id), uniquePhotos([...S.homeCovers, ...publicAlbums.flatMap(a => a.picks)]))}
 			</div>
 
 			<h2 class="admin-h">Albums</h2>
@@ -441,7 +502,7 @@ function renderMain() {
 							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
 							<div class="fav-list">Loading…</div>
 						</details>` : ''}
-						${coverPicker('folder', f.id, f.cover_photo_id, albums)}
+						${coverPicker('folder', f.id, [f.cover_photo_id], albums.flatMap(a => a.picks))}
 						</div>
 					</li>`;
 				}).join('')}
@@ -625,6 +686,7 @@ async function renderAlbum(id) {
 			<p><a class="btn-small" href="#">← All albums</a></p>
 
 			<h2 class="admin-h">Album</h2>
+			<div class="album-cover" id="album-cover"></div>
 			<form class="album-form" id="album-form">
 				<label class="label" for="title">Title</label>
 				<input class="field" id="title" value="${esc(a.title)}" maxlength="120" required>
@@ -635,7 +697,7 @@ async function renderAlbum(id) {
 				<label class="check"><input type="checkbox" id="downloads"${a.downloads_off ? '' : ' checked'}> Allow downloads
 					<small>(off also stops full-resolution zoom)</small></label>
 				<div class="row-actions">
-					<button class="btn-small" type="submit">Save</button>
+					<button class="btn-small" type="submit">Save details</button>
 					<a class="btn-small" href="${albumUrl(a)}" target="_blank" rel="noopener">Open album</a>
 				</div>
 			</form>
@@ -646,7 +708,7 @@ async function renderAlbum(id) {
 				<span>Drop photos here or click to choose</span>
 				<small id="progress">JPEG, PNG or WebP. Originals are kept for download.</small>
 			</label>
-			<p class="admin-hint">Click a photo's "Cover" to use it as the album cover. Drag ⠿ to reorder.
+			<p class="admin-hint">Cover, order and deletions save at once. Drag ⠿ to reorder.
 				<button type="button" class="link-btn" id="sort-taken">Sort by date taken</button></p>
 			<div class="photo-grid" id="photos"></div>
 
@@ -662,17 +724,33 @@ async function renderAlbum(id) {
 		<div class="photo-cell${p.id === coverId ? ' selected' : ''}" data-photo="${p.id}" data-id="${p.id}">
 			<img src="${img(p.key, 't')}" alt="" loading="lazy">
 			${gripHtml}
+			<span class="cover-badge">✓ Cover</span>
 			<div class="photo-actions">
-				<button class="btn-small" data-cover>Cover</button>
+				<button class="btn-small" data-open>Open</button>
 				<button class="btn-small danger" data-delete>Delete</button>
 			</div>
 		</div>`;
 	grid.innerHTML = photos.map(cell).join('');
+
+	// Photos in the order shown in the grid (after drags, uploads and deletions).
+	const inOrder = () => [...grid.children].map(el => photos.find(p => p.id === Number(el.dataset.id))).filter(Boolean);
+
+	// Cover chooser at the top, same as on the home page and folders; redrawn when photos change.
+	const setCover = photoId => {
+		coverId = photoId;
+		grid.querySelectorAll('.photo-cell').forEach(x => x.classList.toggle('selected', Number(x.dataset.id) === photoId));
+	};
+	const drawCoverRow = () => {
+		document.getElementById('album-cover').innerHTML = coverPicker('album', id, [coverId], inOrder());
+		bindCoverPickers(setCover);
+	};
+	drawCoverRow();
 	const updateCount = () => { document.getElementById('count').textContent = plural(grid.children.length, 'photo'); };
 
 	const saveOrder = ids => api(`albums/${id}/order`, { method: 'PUT', body: { ids } });
 	makeSortable(grid, ids => run(async () => {
 		await saveOrder(ids);
+		drawCoverRow();
 		toast('Order saved');
 	}));
 
@@ -687,6 +765,7 @@ async function renderAlbum(id) {
 		const ids = [...dated, ...current.filter(pid => !byId.get(pid)?.taken_at)];
 		await saveOrder(ids);
 		ids.forEach(pid => grid.appendChild(grid.querySelector(`[data-id="${pid}"]`)));
+		drawCoverRow();
 		toast('Sorted by date taken');
 	});
 
@@ -694,16 +773,19 @@ async function renderAlbum(id) {
 		const c = e.target.closest('.photo-cell');
 		if (!c) return;
 		const photoId = Number(c.dataset.photo);
-		if (e.target.closest('[data-cover]')) run(async () => {
-			await api(`albums/${id}`, { method: 'PATCH', body: { cover_photo_id: photoId } });
-			coverId = photoId;
-			grid.querySelectorAll('.photo-cell').forEach(x => x.classList.toggle('selected', x === c));
-		});
+		if (e.target.closest('[data-open]')) {
+			const list = inOrder();
+			previewPhotos(list, list.findIndex(p => p.id === photoId));
+		}
 		if (e.target.closest('[data-delete]')) run(async () => {
 			if (!confirm('Delete this photo?')) return;
 			await api(`photos/${photoId}`, { method: 'DELETE' });
 			S.photoCount--;
 			c.remove();
+			photos.splice(photos.findIndex(p => p.id === photoId), 1);
+			// Without a chosen cover the album uses its first photo, as the server does.
+			if (coverId === photoId) setCover(inOrder()[0]?.id);
+			drawCoverRow();
 			updateCount();
 		});
 	});
@@ -766,7 +848,7 @@ async function renderAlbum(id) {
 		busy = false;
 		input.value = '';
 		progress.textContent = failed.length ? `Done. Failed: ${failed.join(', ')}` : `Done. ${plural(files.length, 'photo')} uploaded.`;
-		S = await api('state');
+		drawCoverRow();
 	}
 }
 
@@ -852,9 +934,17 @@ async function refresh() {
 	route();
 }
 
+// The main list always reloads its data, so covers, counts and photos changed in an album editor show at once.
+let fresh = false; // set by start(), which has just loaded the state
 function route() {
 	const m = location.hash.match(/^#album\/(\d+)$/);
-	run(() => (m ? renderAlbum(Number(m[1])) : renderMain()));
+	const justLoaded = fresh;
+	fresh = false;
+	run(async () => {
+		if (m) return renderAlbum(Number(m[1]));
+		if (!justLoaded) S = await api('state');
+		renderMain();
+	});
 }
 
 async function start() {
@@ -864,6 +954,7 @@ async function start() {
 		if (!(e instanceof LoginNeeded)) toast(e.message);
 		return;
 	}
+	fresh = true;
 	window.onhashchange = route;
 	route();
 }

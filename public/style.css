@@ -988,3 +988,103 @@ select.field { appearance: auto; }
 	.album-row { grid-template-columns: 20px 56px 1fr; }
 	.album-row .row-actions { grid-column: 3; }
 }
+
+/* Album editor: cover row, cover label on the grid, photo preview */
+
+.album-cover { margin-bottom: 20px; }
+
+.cover-count {
+	color: var(--muted);
+	font-size: 11px;
+	font-style: normal;
+}
+
+.cover-badge {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: none;
+	padding: 3px 7px;
+	background: var(--text);
+	color: var(--bg);
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: .15em;
+	text-transform: uppercase;
+}
+
+.photo-cell.selected .cover-badge { display: block; }
+
+.modal.preview {
+	place-items: center;
+	padding: 24px 56px;
+	background: rgba(0, 0, 0, .9);
+	cursor: zoom-out;
+}
+
+.preview figure {
+	display: grid;
+	justify-items: center;
+	gap: 10px;
+	margin: 0;
+}
+
+.preview img {
+	max-width: 100%;
+	max-height: calc(100vh - 100px);
+	max-height: calc(100dvh - 100px);
+	object-fit: contain;
+}
+
+.preview figcaption { color: var(--muted); font-size: 12px; }
+
+.preview-nav {
+	position: fixed;
+	top: 50%;
+	width: 48px;
+	height: 64px;
+	margin-top: -32px;
+	color: var(--text);
+	font-size: 40px;
+	line-height: 1;
+	opacity: .6;
+	cursor: pointer;
+}
+
+.preview-nav:hover { opacity: 1; }
+.preview-nav.prev { left: 4px; }
+.preview-nav.next { right: 4px; }
+
+@media (max-width: 700px) {
+	.modal.preview { padding: 16px 8px; }
+	.cover-count { display: block; width: 100%; }
+}
+
+.cover-picker summary { flex-wrap: wrap; }
+
+/* Slideshow: full-bleed photo, slow fades, controls only on mouse move, no cursor. */
+
+.lightbox.slideshow {
+	--header: 0px;
+	--stage-pad: 0px;
+	grid-template-rows: 1fr;
+	cursor: none;
+}
+
+.lightbox.slideshow .lightbox-stage { padding: 0; }
+.lightbox.slideshow .lightbox-stage img { transition: opacity .9s ease; cursor: none; }
+.lightbox.slideshow .lightbox-nav { display: none; }
+
+.lightbox.slideshow .lightbox-bar {
+	position: absolute;
+	inset: 0 0 auto;
+	z-index: 2;
+	height: 64px;
+	background: linear-gradient(rgba(0, 0, 0, .55), transparent);
+	opacity: 0;
+	transition: opacity .3s;
+	pointer-events: none;
+}
+
+.lightbox.slideshow.show-ui { cursor: default; }
+.lightbox.slideshow.show-ui .lightbox-bar { opacity: 1; pointer-events: auto; }

@@ -55,6 +55,8 @@ easy downloads, and private album links you can share with anyone.
 - Photo viewer with keyboard arrows, swipe, **pinch / double-tap / wheel zoom** and drag to pan.
   Past the display resolution it quietly loads the original, so zoomed detail stays sharp.
 - **Download** the original with its original file name, from the grid (hover) or the viewer.
+- **Slideshow** button in the viewer: full screen, a new photo every 5 seconds, loops forever and keeps the
+  screen awake, so a TV or laptop can show an album at a party or wedding. Tap, click, Esc or Space stops it.
 - **Share** button: the device's own share sheet (phones, Safari, Chrome, Edge), copy-link fallback elsewhere.
 - **Link previews** (WhatsApp, Messenger, Slack, ...) with title, description and cover photo.
 - Big albums load 100 photos at a time as you scroll.
@@ -79,7 +81,9 @@ easy downloads, and private album links you can share with anyone.
 - **Downloads switch** per album and per folder (on by default). Off hides the buttons and stops serving
   originals, so zoom stays at the display resolution.
 - **Views and downloads** per album, views and favourites per folder (your own visits are not counted).
-- Cover photo chooser for the home page, each folder and each album.
+- **Cover photos:** up to 5 for the home page (one shown at random on each visit), one per folder and per album.
+  Every choice saves at once; the current album cover is marked in the photo grid.
+- **Open** any photo in the album editor for a quick full-size preview (arrow keys to browse).
 - Search for albums and folders (ignores accents: "seinajoki" finds "Seinäjoki").
 - Site name setting, storage used (with on-demand recount) and photo count.
 
