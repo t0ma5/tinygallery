@@ -2,7 +2,7 @@
 
 A small, fast photo gallery for **one photographer**, running entirely on Cloudflare's free tier:
 Pages for the site, Pages Functions for the API, **D1** for the database and **R2** for the photos.
-No framework, no build step, no npm dependencies: about 2,400 lines of plain JavaScript, HTML and CSS.
+No framework, no build step, no npm dependencies: about 3,300 lines of plain JavaScript, HTML and CSS.
 
 Minimal dark design: full-screen covers, a masonry grid, a clean photo viewer,
 easy downloads, and private links for clients.
