@@ -15,20 +15,28 @@ easy downloads, and private album links you can share with anyone.
 | Albums on the home page | Private folder |
 |---|---|
 | ![Album cards](docs/screenshots/home-albums.jpg) | ![Private folder cover](docs/screenshots/folder.jpg) |
-| **Album grid** | **Photo viewer with share, download and zoom** |
+| **Album grid with Download all** | **Photo viewer with slideshow, share, download and zoom** |
 | ![Album grid](docs/screenshots/album.jpg) | ![Photo viewer](docs/screenshots/viewer.jpg) |
 
 **On a phone:** cover, album grid and viewer.
 
 ![Phone screens](docs/screenshots/mobile.jpg)
 
+**Slideshow** for a TV at a party: speed, shuffle and a QR code guests can scan to open the album.
+
+![Slideshow with QR code](docs/screenshots/slideshow.jpg)
+
 **Admin panel** at `/admin`:
 
 | Settings and home page | Albums, drag to reorder |
 |---|---|
 | ![Admin settings](docs/screenshots/admin-overview.jpg) | ![Admin albums](docs/screenshots/admin-albums.jpg) |
-| **Private folder: link, password, expiry, downloads, favourites** | **Album: upload, cover, reorder** |
+| **Private folder: link, QR code, password, expiry, downloads, favourites** | **Album: upload, select to move or delete, reorder** |
 | ![Admin private folder](docs/screenshots/admin-folder.jpg) | ![Admin album editor](docs/screenshots/admin-album.jpg) |
+
+**Trash:** deleted photos and albums can be restored for 7 days.
+
+![Admin trash](docs/screenshots/admin-trash.jpg)
 
 ---
 
@@ -142,9 +150,11 @@ flowchart LR
 ### Uploads
 
 Resizing happens **in the admin's browser** (canvas, EXIF orientation applied), so the server never decodes
-images and stays far below the 10 ms CPU limit of the free plan. Each photo is uploaded in three steps:
+images and stays far below the 10 ms CPU limit of the free plan. The browser also adds the optional watermark to
+the display copy and works out a SHA-256 fingerprint of the file. Photos upload 3 at a time, each in three steps:
 
-1. `POST /api/admin/albums/<id>/photos` returns a new random key.
+1. `POST /api/admin/albums/<id>/photos` with the fingerprint returns a new random key, or `409` when the same file
+   is already in the album (it is skipped).
 2. `PUT /api/admin/upload/<key>/<t|d|o>` streams each file straight into R2 (the function never reads the bytes).
 3. `POST /api/admin/albums/<id>/photos/<key>` checks all three files exist and adds the photo to the album.
 
@@ -161,6 +171,8 @@ A 22 MB original uploads in a few seconds this way.
 - **Hidden** albums are visible to the admin only.
 - Deleting a folder makes its albums **hidden**, never public, so nothing private leaks onto the home page.
 - The admin can preview any album.
+- Photos and albums in the **trash** are gone from every page; their originals are not served (thumbnails stay
+  reachable only to someone who already has their random address) until restored or removed for good.
 
 ---
 
@@ -374,15 +386,16 @@ tinygallery/
 - QR codes: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) by Kazuhiko Arase, MIT.
   ZIP files: [client-zip](https://github.com/Touffy/client-zip) by David Junger, MIT.
 - Demo photos from [Unsplash](https://unsplash.com/license) via [Lorem Picsum](https://picsum.photos), by
-  Afroz Nawaf, Alan Haverty, Alejandro Escamilla, Aleks Dorohovich, Ales Krivec, Anton Sulsky, Artur Pokusin,
-  Bartosz Bąk, Ben Moore, Bonnie Meisels, Brooklyn Morgan, Carli Jean, Charlie Foster, Christopher Sardegna,
-  Daniel Robert, Dogancan Ozturan, Dominik Martin, Dorothee Hübner, Dorothy Lin, Forrest Cavale, Glen Carrie,
-  Go Wild, Griffin Keller, How-Soon Ngu, Jeff Sheldon, John French, Jon Eckert, Jonas Lavoie-Levesque,
-  Juskteez Vu, Justin Leibow, Kelley Bozarth, Kristian Karlsson, Lou Levit, Louis Pellissier, Lucas Löf,
-  Marta Pawlik, Martin Staněk, Milada Vigerova, Nathalie Gouzée, Nicholas Swanson, Oisin Conolly, Pawel Kadysz,
-  Philipp Henzler, Piotr Kwiatkowski, POR7O, RayBay, Rula Sibai, Ruxandra Mateiu, Ryan Mcguire,
-  Sebastian Kostrubala, Sebastien Gabriel, Shane Colella, Sonja Langford, Thomas Lefebvre, Tirza van Dijk,
-  Topich, Vadim Sherbakov, Wellington Sanipe, Zugr and Zwaddi. The photos are not part of this repository.
+  Afroz Nawaf, Alan Haverty, Alejandro Escamilla, Aleks Dorohovich, Aleksandra Boguslawska, Ales Krivec, Anton
+  Sulsky, Artur Pokusin, Bartosz Bąk, Ben Moore, Brooklyn Morgan, Carli Jean, Charlie Foster, Christopher
+  Sardegna, Daniel Robert, Dogancan Ozturan, Dominik Martin, Dorothy Lin, Forrest Cavale, Georgia Dixon, Glen
+  Carrie, Go Wild, Greg Shield, Griffin Keller, How-Soon Ngu, Jeff Sheldon, Jerry Adney, John French, Jon Eckert,
+  Jonas Lavoie-Levesque, Juskteez Vu, Justin Leibow, Kelley Bozarth, Kenneth Thewissen, Lou Levit, Lucas Löf,
+  Marta Pawlik, Martin Staněk, Milada Vigerova, Monika Majkowska, Nathalie Gouzée, Nicholas Swanson, Oisin
+  Conolly, Pawel Kadysz, Philipp Henzler, Piotr Kwiatkowski, POR7O, Rula Sibai, Ruxandra Mateiu, Ryan Mcguire,
+  Sebastian Kostrubala, Shane Colella, Shyamanta Baruah, Sonja Langford, Steven Spassov, Thomas Lefebvre, Tirza
+  van Dijk, Topich, Vadim Sherbakov, Wellington Sanipe, Zugr and Zwaddi. The photos are not part of this
+  repository.
 
 ## License
 

@@ -1114,6 +1114,8 @@ select.field { appearance: auto; }
 .photo-grid.selecting .photo-cell { cursor: pointer; }
 .photo-grid.selecting .photo-cell img { transition: opacity .15s; }
 .photo-grid.selecting .photo-cell:not(.picked) img { opacity: .6; }
+/* In select mode only the picked photos are outlined, not the cover. */
+.photo-grid.selecting .photo-cell.selected:not(.picked) { outline-color: transparent; }
 .photo-cell.picked { outline-color: var(--text); }
 
 .photo-cell.picked::after {
