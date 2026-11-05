@@ -139,6 +139,7 @@ function stripGps(buf) {
 
 // Private folders start collapsed; the ones opened stay open while the admin page is open.
 const openFolders = new Set();
+let scrollToFolder = null; // set when going back from an album to its folder
 // Search boxes for the album and folder lists; their text is kept while the admin page is open.
 const queries = { albums: '', folders: '' };
 
@@ -586,7 +587,7 @@ function renderMain() {
 			</ul>
 
 			<h2 class="admin-h">Private folders</h2>
-			<p class="admin-hint">People you share a folder with see its name on the cover, so name it for them. Anyone with a folder link can open it, unless you set a password. Put albums in a folder from the album's settings.</p>
+			<p class="admin-hint">People you share a folder with see its name on the cover, so name it for them. Anyone with a folder link can open it, unless you set a password. Photos go into albums: open a folder and use + New album, or move an existing album in from its settings.</p>
 			${S.folders.length ? `<input class="field list-search" id="folders-search" type="search" placeholder="Search folders or their albums" value="${esc(queries.folders)}">` : ''}
 			<p class="admin-hint" id="folders-empty" hidden>No folders match.</p>
 			<ul class="folder-list" id="folders-list">
@@ -625,6 +626,21 @@ function renderMain() {
 							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
 							<div class="fav-list">Loading…</div>
 						</details>` : ''}
+						<div class="folder-albums">
+							<div class="folder-albums-head">
+								<span>${plural(albums.length, 'album')}</span>
+								<button type="button" class="btn-small" data-act="newalbum">+ New album</button>
+							</div>
+							${albums.map(a => `
+								<div class="folder-album">
+									<a class="album-thumb" href="#album/${a.id}">${a.cover ? `<img src="${img(a.cover, 't')}" alt="">` : ''}</a>
+									<span class="folder-info">
+										<a class="folder-name" href="#album/${a.id}">${esc(a.title)}</a>
+										<span class="folder-meta">${plural(a.count, 'photo')}</span>
+									</span>
+									<a class="btn-small" href="#album/${a.id}">Edit</a>
+								</div>`).join('') || '<p class="admin-hint">No albums yet. Add one, then upload photos into it.</p>'}
+						</div>
 						${coverPicker('folder', f.id, [f.cover_photo_id], albums.flatMap(a => a.picks))}
 						</div>
 					</li>`;
@@ -640,6 +656,10 @@ function renderMain() {
 
 	bindHeader();
 	bindCoverPickers();
+	if (scrollToFolder) {
+		app.querySelector(`[data-folder="${scrollToFolder}"]`)?.scrollIntoView({ block: 'start' });
+		scrollToFolder = null;
+	}
 
 	app.querySelectorAll('[data-copy]').forEach(btn => {
 		btn.onclick = async () => {
@@ -697,6 +717,17 @@ function renderMain() {
 				await api(`folders/${id}`, { method: 'PATCH', body: { password: null } });
 			}
 			if (btn.dataset.act === 'noexpiry') await api(`folders/${id}`, { method: 'PATCH', body: { expires_at: null } });
+			if (btn.dataset.act === 'newalbum') {
+				const title = prompt(`New album in "${f.title}"`);
+				if (!title?.trim()) return;
+				const { id: albumId } = await api('albums', {
+					method: 'POST',
+					body: { title, date: new Date().toISOString().slice(0, 10), folder_id: id, hidden: false },
+				});
+				S = await api('state');
+				location.hash = `album/${albumId}`; // straight to the upload area
+				return;
+			}
 			await refresh();
 		});
 	});
@@ -830,7 +861,7 @@ async function renderAlbum(id) {
 	app.innerHTML = `
 		${header()}
 		<main class="admin">
-			<p><a class="btn-small" href="#">← All albums</a></p>
+			<p><a class="btn-small" href="#" id="back">← ${folderOf(a.folder_id) ? `Folder: ${esc(folderOf(a.folder_id).title)}` : 'All albums'}</a></p>
 
 			<h2 class="admin-h">Album</h2>
 			<div class="album-cover" id="album-cover"></div>
@@ -877,6 +908,11 @@ async function renderAlbum(id) {
 		</main>`;
 
 	bindHeader();
+	// Back from an album in a folder reopens that folder on the main page.
+	document.getElementById('back').onclick = () => {
+		const { folder_id } = parseWhere(document.getElementById('where').value);
+		if (folder_id) { openFolders.add(folder_id); scrollToFolder = folder_id; }
+	};
 	const grid = document.getElementById('photos');
 	let coverId = a.cover_photo_id || photos[0]?.id;
 

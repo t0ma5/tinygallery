@@ -1206,3 +1206,29 @@ select.field { appearance: auto; }
 
 .slide-qr[hidden] { display: none; }
 .slide-qr svg { width: 100%; height: auto; display: block; }
+
+/* Admin: albums inside an opened folder */
+
+.folder-albums { grid-column: 1 / -1; }
+
+.folder-albums-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	color: var(--muted);
+	font-size: 12px;
+	margin-bottom: 4px;
+}
+
+.folder-album {
+	display: grid;
+	grid-template-columns: 56px 1fr auto;
+	align-items: center;
+	gap: 12px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--line);
+}
+
+.folder-album .album-thumb { width: 56px; height: 40px; }
+.folder-albums .admin-hint { margin: 4px 0 0; }
