@@ -375,6 +375,7 @@ tinygallery/
     ├── fonts/                 Montserrat (SIL OFL)
     ├── vendor/                qrcode-generator (QR codes), client-zip (ZIP files), both MIT
     ├── _headers, robots.txt
+    └── favicon.ico            replace with your own icon
 ```
 
 ---
