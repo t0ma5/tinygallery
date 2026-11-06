@@ -31,7 +31,7 @@ easy downloads, and private album links you can share with anyone.
 | Settings and home page | Albums, drag to reorder |
 |---|---|
 | ![Admin settings](docs/screenshots/admin-overview.jpg) | ![Admin albums](docs/screenshots/admin-albums.jpg) |
-| **Private folder: link, QR code, password, expiry, downloads, favourites** | **Album: upload, select to move or delete, reorder** |
+| **Private folder page: cover, link, QR code, password, expiry, downloads, favourites, its albums** | **Album: upload, select to move or delete, reorder** |
 | ![Admin private folder](docs/screenshots/admin-folder.jpg) | ![Admin album editor](docs/screenshots/admin-album.jpg) |
 
 **Trash:** deleted photos and albums can be restored for 7 days.
