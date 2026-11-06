@@ -545,41 +545,11 @@ select.field { appearance: auto; }
 .link-btn:hover { color: var(--text); }
 .link-btn:disabled { text-decoration: none; cursor: default; }
 
-.folder-item { border-bottom: 1px solid var(--line); }
-
 .list-search {
 	max-width: 420px;
 	margin-bottom: 12px;
 }
 
-.folder-toggle {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
-	width: 100%;
-	padding: 14px 0;
-	text-align: left;
-}
-
-.folder-toggle .chevron {
-	flex: none;
-	width: 18px;
-	height: 18px;
-	color: var(--muted);
-	transition: transform .2s;
-}
-
-.folder-toggle:hover .chevron { color: var(--text); }
-.folder-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
-
-.folder-row.folder-body {
-	grid-template-columns: 1fr auto;
-	padding-top: 0;
-	border-bottom: 0;
-}
-
-.folder-row.folder-body[hidden],
 .album-row[hidden] { display: none; }
 .inline-form .btn-small { padding: 9px 16px; }
 
@@ -830,8 +800,7 @@ select.field { appearance: auto; }
 	.lightbox-stage { padding: 0 0 var(--stage-pad); }
 	.lightbox-nav { display: none; }
 	.download-label { display: none; }
-	.folder-row,
-	.folder-row.folder-body { grid-template-columns: 1fr; gap: 10px; }
+	.folder-row { grid-template-columns: 1fr; gap: 10px; }
 	.album-thumb { width: 56px; height: 40px; }
 	.admin { padding: 16px 16px 0; }
 }
@@ -1207,28 +1176,15 @@ select.field { appearance: auto; }
 .slide-qr[hidden] { display: none; }
 .slide-qr svg { width: 100%; height: auto; display: block; }
 
-/* Admin: albums inside an opened folder */
+/* Admin: folder rows (no drag handle: folders are listed newest first), cover chooser album list */
 
-.folder-albums { grid-column: 1 / -1; }
+.album-row.no-grip { grid-template-columns: 72px 1fr auto; }
+.folder-row.link-row { grid-template-columns: 1fr auto; }
+.cover-album { max-width: 420px; margin: 12px 0 0; }
+.cover-chosen:empty { display: none; }
 
-.folder-albums-head {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	color: var(--muted);
-	font-size: 12px;
-	margin-bottom: 4px;
+@media (max-width: 700px) {
+	.album-row.no-grip { grid-template-columns: 56px 1fr; }
+	.album-row.no-grip .row-actions { grid-column: 2; }
+	.folder-row.link-row { grid-template-columns: 1fr; }
 }
-
-.folder-album {
-	display: grid;
-	grid-template-columns: 56px 1fr auto;
-	align-items: center;
-	gap: 12px;
-	padding: 6px 0;
-	border-bottom: 1px solid var(--line);
-}
-
-.folder-album .album-thumb { width: 56px; height: 40px; }
-.folder-albums .admin-hint { margin: 4px 0 0; }

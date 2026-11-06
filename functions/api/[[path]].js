@@ -234,17 +234,15 @@ async function login(request, env) {
 }
 
 async function state(env) {
-	const [folders, albums, picks, settings, photoCount, trash] = await Promise.all([
-		// Never send password hashes to the browser, only whether one is set.
+	const [folders, albums, settings, photoCount, trash] = await Promise.all([
+		// Never send password hashes to the browser, only whether one is set. cover_key: the chosen cover while
+		// it is still in one of the folder's albums (same rule as the public page).
 		env.DB.prepare(`SELECT f.id, f.token, f.title, f.cover_photo_id, f.expires_at, f.downloads_off, f.views, f.last_viewed_at,
 				f.password_hash IS NOT NULL AS has_password,
+				(SELECT p.key FROM photos p JOIN albums a ON a.id = p.album_id WHERE p.id = f.cover_photo_id AND a.folder_id = f.id) AS cover_key,
 				(SELECT COUNT(DISTINCT photo_id) FROM favorites v WHERE v.folder_id = f.id) AS favorites
 			FROM folders f ORDER BY f.id DESC`).all(),
 		env.DB.prepare(ALBUM_SQL + ALBUM_ORDER).all(),
-		// First 12 photos of each album, for the cover choosers.
-		env.DB.prepare(`SELECT id, key, album_id FROM (
-			SELECT id, key, album_id, ROW_NUMBER() OVER (PARTITION BY album_id ORDER BY sort, id) AS rn FROM photos
-		) WHERE rn <= 12`).all(),
 		env.DB.prepare(`SELECT key, value FROM settings WHERE key IN ('storage', 'strip_gps', 'watermark')`).all(),
 		env.DB.prepare('SELECT COALESCE(SUM(photo_count), 0) AS n FROM albums').first(),
 		// Newest first, with the first photo for a thumbnail and the number of photos (not the whole rows).
@@ -252,12 +250,6 @@ async function state(env) {
 			FROM trash ORDER BY deleted_at DESC, id DESC`).all(),
 	]);
 	const setting = k => settings.results.find(r => r.key === k)?.value;
-	// Grouped once, so big galleries stay inside the CPU limit.
-	const picksOf = new Map();
-	for (const p of picks.results) {
-		if (!picksOf.has(p.album_id)) picksOf.set(p.album_id, []);
-		picksOf.get(p.album_id).push({ id: p.id, key: p.key });
-	}
 	return json({
 		photographer: await siteName(env),
 		storage: setting('storage') ? JSON.parse(setting('storage')) : null,
@@ -270,10 +262,8 @@ async function state(env) {
 		trash: trash.results,
 		trashDays: TRASH_DAYS,
 		folders: folders.results,
-		albums: albums.results.map(a => ({
-			...a,
-			picks: picksOf.get(a.id) || [],
-		})),
+		// No photos here: the cover choosers load one album's photos when opened, so this stays small.
+		albums: albums.results,
 	});
 }
 

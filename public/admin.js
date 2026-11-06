@@ -4,7 +4,6 @@ let S = null; // state from /api/admin/state
 
 const ICON = {
 	folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>',
-	chevron: '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 9l6 6 6-6"/></svg>',
 	grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>',
 };
 
@@ -137,9 +136,6 @@ function stripGps(buf) {
 	}
 }
 
-// Private folders start collapsed; the ones opened stay open while the admin page is open.
-const openFolders = new Set();
-let scrollToFolder = null; // set when going back from an album to its folder
 // Search boxes for the album and folder lists; their text is kept while the admin page is open.
 const queries = { albums: '', folders: '' };
 
@@ -304,10 +300,32 @@ function storageLine(storage) {
 // The home page takes up to this many covers and shows one at random on each visit.
 const HOME_COVERS = 5;
 
-// Drops repeated photos (by id), keeping the first: chosen covers first, then the albums' photos.
-const uniquePhotos = list => [...new Map(list.map(p => [p.id, p])).values()];
+const thumbHtml = (p, selected) => `
+	<button type="button" class="cover-thumb${selected ? ' selected' : ''}" data-photo="${p.id}" data-key="${p.key}">
+		<img src="${img(p.key, 't')}" alt="" loading="lazy">
+	</button>`;
 
-// Cover chooser: kind 'home' (several), 'folder' or 'album' (one). Every pick saves at once.
+// Cover chooser for the home page (several covers) or a folder (one), over many albums. Nothing loads until
+// it is opened; then one album's photos at a time, picked from a list, so any photo can be the cover.
+function coverChooser(kind, id, selectedIds, shownKey, albums) {
+	albums = albums.filter(a => a.count);
+	if (!albums.length) return '<p class="admin-hint cover-picker">Add photos to choose a cover.</p>';
+	const multi = kind === 'home';
+	return `
+		<details class="cover-picker" data-kind="${kind}" data-id="${id}" data-selected="${selectedIds.filter(Boolean).join(',')}">
+			<summary><img src="${img(shownKey || albums.find(a => a.cover)?.cover, 't')}" alt="">
+				<span>${multi ? 'Cover photos' : 'Cover photo'}</span>
+				${multi ? `<em class="cover-count">${selectedIds.length} of ${HOME_COVERS}, one at random on each visit</em>` : ''}
+				<small>Change</small></summary>
+			${multi ? '<div class="cover-thumbs cover-chosen"></div>' : ''}
+			<select class="field cover-album">
+				${albums.map(a => `<option value="${a.id}">${esc(a.title)} (${plural(a.count, 'photo')})</option>`).join('')}
+			</select>
+			<div class="cover-thumbs cover-photos"><p class="admin-hint">Loading…</p></div>
+		</details>`;
+}
+
+// Cover chooser for one album: its photos are already on the page.
 function coverPicker(kind, id, selectedIds, picks) {
 	if (!picks.length) return '<p class="admin-hint cover-picker">Add photos to choose a cover.</p>';
 	const multi = kind === 'home';
@@ -321,10 +339,7 @@ function coverPicker(kind, id, selectedIds, picks) {
 				${multi ? `<em class="cover-count">${selected.size} of ${HOME_COVERS}, one at random on each visit</em>` : ''}
 				<small>Change</small></summary>
 			<div class="cover-thumbs">
-				${picks.map(p => `
-					<button type="button" class="cover-thumb${selected.has(p.id) ? ' selected' : ''}" data-photo="${p.id}" data-key="${p.key}">
-						<img src="${img(p.key, 't')}" alt="" loading="lazy">
-					</button>`).join('')}
+				${picks.map(p => thumbHtml(p, selected.has(p.id))).join('')}
 			</div>
 		</details>`;
 }
@@ -332,12 +347,39 @@ function coverPicker(kind, id, selectedIds, picks) {
 // onAlbumCover: lets the album editor update its photo grid when the cover changes.
 function bindCoverPickers(onAlbumCover) {
 	app.querySelectorAll('.cover-picker').forEach(picker => {
+		const select = picker.querySelector('.cover-album');
+		const selected = () => new Set((picker.dataset.selected || '').split(',').filter(Boolean).map(Number));
+		// Home: the chosen covers in their own row, so ones from other albums can be removed too.
+		const drawChosen = () => {
+			const row = picker.querySelector('.cover-chosen');
+			if (row) row.innerHTML = S.homeCovers.map(p => thumbHtml(p, true)).join('');
+		};
+		const loadAlbum = () => run(async () => {
+			const box = picker.querySelector('.cover-photos');
+			box.innerHTML = '<p class="admin-hint">Loading…</p>';
+			const { photos } = await api(`albums/${select.value}`);
+			const ids = selected();
+			box.innerHTML = photos.map(p => thumbHtml(p, ids.has(p.id))).join('');
+		});
+		if (select) {
+			picker.addEventListener('toggle', () => {
+				if (!picker.open || picker.dataset.loaded) return;
+				picker.dataset.loaded = '1';
+				drawChosen();
+				loadAlbum();
+			});
+			select.onchange = loadAlbum;
+		}
 		picker.addEventListener('click', e => {
 			const thumb = e.target.closest('.cover-thumb');
 			if (!thumb) return;
 			run(async () => {
 				const photoId = Number(thumb.dataset.photo);
 				const kind = picker.dataset.kind;
+				const mark = ids => {
+					picker.dataset.selected = [...ids].join(',');
+					picker.querySelectorAll('.cover-photos .cover-thumb').forEach(b => b.classList.toggle('selected', ids.has(Number(b.dataset.photo))));
+				};
 				if (kind === 'home') {
 					// Toggle in or out of the set; the summary shows the first chosen one.
 					const ids = new Set(S.homeCovers.map(c => c.id));
@@ -346,15 +388,18 @@ function bindCoverPickers(onAlbumCover) {
 					else ids.add(photoId);
 					await api('home-covers', { method: 'PUT', body: { ids: [...ids] } });
 					S.homeCovers = [...ids].map(pid => S.homeCovers.find(c => c.id === pid) || { id: pid, key: thumb.dataset.key });
-					thumb.classList.toggle('selected', ids.has(photoId));
+					mark(ids);
+					drawChosen();
 					picker.querySelector('.cover-count').textContent = `${ids.size} of ${HOME_COVERS}, one at random on each visit`;
-					const first = picker.querySelector('.cover-thumb.selected') || picker.querySelector('.cover-thumb');
-					picker.querySelector('summary img').src = img(first.dataset.key, 't');
+					if (S.homeCovers[0]) picker.querySelector('summary img').src = img(S.homeCovers[0].key, 't');
 					return toast(ids.size ? 'Home covers saved' : 'No cover chosen: the first album\'s cover is used');
 				}
 				if (kind === 'folder') {
 					await api(`folders/${picker.dataset.id}`, { method: 'PATCH', body: { cover_photo_id: photoId } });
-					folderOf(Number(picker.dataset.id)).cover_photo_id = photoId;
+					Object.assign(folderOf(Number(picker.dataset.id)), { cover_photo_id: photoId, cover_key: thumb.dataset.key });
+					mark(new Set([photoId]));
+					picker.querySelector('summary img').src = img(thumb.dataset.key, 't');
+					return toast('Cover saved');
 				} else {
 					await api(`albums/${picker.dataset.id}`, { method: 'PATCH', body: { cover_photo_id: photoId } });
 					onAlbumCover?.(photoId);
@@ -511,6 +556,22 @@ function bindTrash() {
 	});
 }
 
+// Copy link and QR code buttons next to a link field.
+function bindLinks() {
+	app.querySelectorAll('[data-copy]').forEach(btn => {
+		btn.onclick = async () => {
+			const field = btn.closest('.folder-row').querySelector('.link-field');
+			try { await navigator.clipboard.writeText(field.value); } catch { field.select(); document.execCommand('copy'); }
+			btn.textContent = 'Copied';
+			setTimeout(() => { btn.textContent = 'Copy link'; }, 1500);
+		};
+	});
+
+	app.querySelectorAll('[data-qr]').forEach(btn => {
+		btn.onclick = () => run(() => showQr(btn.closest('.folder-row').querySelector('.link-field').value, btn.dataset.qr));
+	});
+}
+
 /* Main page */
 
 function renderMain() {
@@ -550,7 +611,7 @@ function renderMain() {
 					<button class="btn-small" data-qr="${esc(S.photographer)}">QR code</button>
 					<a class="btn-small" href="/" target="_blank" rel="noopener">Open</a>
 				</div>
-				${coverPicker('home', 0, S.homeCovers.map(c => c.id), uniquePhotos([...S.homeCovers, ...publicAlbums.flatMap(a => a.picks)]))}
+				${coverChooser('home', 0, S.homeCovers.map(c => c.id), S.homeCovers[0]?.key, publicAlbums)}
 			</div>
 
 			<h2 class="admin-h">Albums</h2>
@@ -587,64 +648,26 @@ function renderMain() {
 			</ul>
 
 			<h2 class="admin-h">Private folders</h2>
-			<p class="admin-hint">People you share a folder with see its name on the cover, so name it for them. Anyone with a folder link can open it, unless you set a password. Photos go into albums: open a folder and use + New album, or move an existing album in from its settings.</p>
+			<p class="admin-hint">People you share a folder with see its name on the cover, so name it for them. Anyone with a folder link can open it, unless you set a password. Photos go into albums: edit a folder and use + New album, or move an existing album in from its settings.</p>
 			${S.folders.length ? `<input class="field list-search" id="folders-search" type="search" placeholder="Search folders or their albums" value="${esc(queries.folders)}">` : ''}
 			<p class="admin-hint" id="folders-empty" hidden>No folders match.</p>
 			<ul class="folder-list" id="folders-list">
 				${S.folders.map(f => {
 					const albums = S.albums.filter(a => a.folder_id === f.id);
-					const open = openFolders.has(f.id);
+					const cover = f.cover_key || albums.find(a => a.cover)?.cover;
 					return `
-					<li class="folder-item" data-folder="${f.id}" data-search="${esc(searchText([f.title, ...albums.map(a => a.title)].join(' ')))}">
-						<button type="button" class="folder-toggle" aria-expanded="${open}">
-							<span class="folder-info">
-								<span class="folder-name">${ICON.folder}${esc(f.title)}</span>
-								<span class="folder-meta">${folderMeta(f, albums)}</span>
-							</span>
-							${ICON.chevron}
-						</button>
-						<div class="folder-row folder-body"${open ? '' : ' hidden'}>
-						<input class="field link-field" readonly value="${esc(`${location.origin}/f/${f.token}`)}">
+					<li class="album-row no-grip" data-search="${esc(searchText([f.title, ...albums.map(a => a.title)].join(' ')))}">
+						<a class="album-thumb" href="#folder/${f.id}">${cover ? `<img src="${img(cover, 't')}" alt="">` : ''}</a>
+						<div class="folder-info">
+							<a class="folder-name" href="#folder/${f.id}">${ICON.folder}${esc(f.title)}</a>
+							<span class="folder-meta">${folderMeta(f, albums)}</span>
+						</div>
 						<div class="row-actions">
-							<button class="btn-small" data-copy>Copy link</button>
-							<button class="btn-small" data-qr="${esc(f.title)}">QR code</button>
+							<a class="btn-small" href="#folder/${f.id}">Edit</a>
 							<a class="btn-small" href="/f/${f.token}" target="_blank" rel="noopener">Open</a>
-							<button class="btn-small" data-act="rename">Rename</button>
-							<button class="btn-small" data-act="relink" title="The old link stops working">New link</button>
-							<button class="btn-small danger" data-act="delete">Delete</button>
-						</div>
-						<div class="folder-settings">
-							<span class="setting">Password: <b>${f.has_password ? 'on' : 'off'}</b>
-								<button type="button" class="link-btn" data-act="password">${f.has_password ? 'Change' : 'Set'}</button>
-								${f.has_password ? '<button type="button" class="link-btn" data-act="nopassword">Remove</button>' : ''}</span>
-							<label class="setting">Link works until
-								<input class="field date-field" type="date" data-setting="expires_at" value="${esc(f.expires_at || '')}">
-								${f.expires_at ? '<button type="button" class="link-btn" data-act="noexpiry">No expiry</button>' : ''}</label>
-							<label class="setting" title="Off hides the buttons and blocks the full-size originals; photos on screen can still be saved"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
-						</div>
-						${f.favorites ? `<details class="favorites" data-favorites="${f.id}">
-							<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
-							<div class="fav-list">Loading…</div>
-						</details>` : ''}
-						<div class="folder-albums">
-							<div class="folder-albums-head">
-								<span>${plural(albums.length, 'album')}</span>
-								<button type="button" class="btn-small" data-act="newalbum">+ New album</button>
-							</div>
-							${albums.map(a => `
-								<div class="folder-album">
-									<a class="album-thumb" href="#album/${a.id}">${a.cover ? `<img src="${img(a.cover, 't')}" alt="">` : ''}</a>
-									<span class="folder-info">
-										<a class="folder-name" href="#album/${a.id}">${esc(a.title)}</a>
-										<span class="folder-meta">${plural(a.count, 'photo')}</span>
-									</span>
-									<a class="btn-small" href="#album/${a.id}">Edit</a>
-								</div>`).join('') || '<p class="admin-hint">No albums yet. Add one, then upload photos into it.</p>'}
-						</div>
-						${coverPicker('folder', f.id, [f.cover_photo_id], albums.flatMap(a => a.picks))}
 						</div>
 					</li>`;
-				}).join('')}
+				}).join('') || '<li class="admin-hint">No folders yet.</li>'}
 			</ul>
 			<form class="inline-form" id="new-folder">
 				<input class="field" id="folder-title" placeholder="New folder, e.g. a name or an event" maxlength="120" required>
@@ -656,118 +679,11 @@ function renderMain() {
 
 	bindHeader();
 	bindCoverPickers();
-	if (scrollToFolder) {
-		app.querySelector(`[data-folder="${scrollToFolder}"]`)?.scrollIntoView({ block: 'start' });
-		scrollToFolder = null;
-	}
 
-	app.querySelectorAll('[data-copy]').forEach(btn => {
-		btn.onclick = async () => {
-			const field = btn.closest('.folder-row').querySelector('.link-field');
-			try { await navigator.clipboard.writeText(field.value); } catch { field.select(); document.execCommand('copy'); }
-			btn.textContent = 'Copied';
-			setTimeout(() => { btn.textContent = 'Copy link'; }, 1500);
-		};
-	});
-
-	app.querySelectorAll('[data-qr]').forEach(btn => {
-		btn.onclick = () => run(() => showQr(btn.closest('.folder-row').querySelector('.link-field').value, btn.dataset.qr));
-	});
-
+	bindLinks();
 	bindSearch('albums');
 	bindSearch('folders');
 	bindTrash();
-
-	app.querySelectorAll('.folder-toggle').forEach(btn => {
-		btn.onclick = () => {
-			const id = Number(btn.closest('[data-folder]').dataset.folder);
-			const open = btn.getAttribute('aria-expanded') !== 'true';
-			btn.setAttribute('aria-expanded', open);
-			btn.nextElementSibling.hidden = !open;
-			if (open) openFolders.add(id);
-			else openFolders.delete(id);
-		};
-	});
-
-	app.querySelectorAll('[data-act]').forEach(btn => {
-		const id = Number(btn.closest('[data-folder]').dataset.folder);
-		const f = folderOf(id);
-		btn.onclick = () => run(async () => {
-			if (btn.dataset.act === 'rename') {
-				const title = prompt('Folder name', f.title);
-				if (!title || title === f.title) return;
-				await api(`folders/${id}`, { method: 'PATCH', body: { title } });
-			}
-			if (btn.dataset.act === 'relink') {
-				if (!confirm(`Make a new link for "${f.title}"? The old link stops working.`)) return;
-				await api(`folders/${id}`, { method: 'PATCH', body: { relink: true } });
-			}
-			if (btn.dataset.act === 'delete') {
-				if (!confirm(`Delete folder "${f.title}"? Its albums become hidden (not deleted).`)) return;
-				await api(`folders/${id}`, { method: 'DELETE' });
-			}
-			if (btn.dataset.act === 'password') {
-				const password = prompt(`Password for "${f.title}" (at least 4 characters). Anyone who opened it with the old one must enter the new one.`);
-				if (password === null) return;
-				await api(`folders/${id}`, { method: 'PATCH', body: { password } });
-				toast('Password set');
-			}
-			if (btn.dataset.act === 'nopassword') {
-				if (!confirm(`Remove the password? Anyone with the link can open "${f.title}" again.`)) return;
-				await api(`folders/${id}`, { method: 'PATCH', body: { password: null } });
-			}
-			if (btn.dataset.act === 'noexpiry') await api(`folders/${id}`, { method: 'PATCH', body: { expires_at: null } });
-			if (btn.dataset.act === 'newalbum') {
-				const title = prompt(`New album in "${f.title}"`);
-				if (!title?.trim()) return;
-				const { id: albumId } = await api('albums', {
-					method: 'POST',
-					body: { title, date: new Date().toISOString().slice(0, 10), folder_id: id, hidden: false },
-				});
-				S = await api('state');
-				location.hash = `album/${albumId}`; // straight to the upload area
-				return;
-			}
-			await refresh();
-		});
-	});
-
-	// Expiry date and the downloads switch save as soon as they change.
-	app.querySelectorAll('[data-setting]').forEach(input => {
-		const id = Number(input.closest('[data-folder]').dataset.folder);
-		input.onchange = () => run(async () => {
-			const body = input.dataset.setting === 'downloads'
-				? { downloads_off: !input.checked }
-				: { expires_at: input.value || null };
-			await api(`folders/${id}`, { method: 'PATCH', body });
-			await refresh();
-			toast('Saved');
-		});
-	});
-
-	// Favourites load when opened: thumbnails with who picked them, and the file names to copy for editing.
-	app.querySelectorAll('[data-favorites]').forEach(box => {
-		box.addEventListener('toggle', () => {
-			if (!box.open || box.dataset.loaded) return;
-			box.dataset.loaded = '1';
-			run(async () => {
-				const { photos } = await api(`folders/${box.dataset.favorites}/favorites`);
-				box.querySelector('.fav-list').innerHTML = `
-					<div class="fav-grid">
-						${photos.map(p => `
-							<figure>
-								<img src="${img(p.key, 't')}" alt="" loading="lazy">
-								<figcaption>${esc(p.name)}<br><small>${esc(p.album)} · ${esc(p.clients)}</small></figcaption>
-							</figure>`).join('')}
-					</div>
-					<button type="button" class="btn-small" data-copy-names>Copy file names</button>`;
-				box.querySelector('[data-copy-names]').onclick = async e => {
-					const names = photos.map(p => p.name).join('\n');
-					try { await navigator.clipboard.writeText(names); e.target.textContent = 'Copied'; } catch { prompt('File names', names); }
-				};
-			});
-		});
-	});
 
 	const albumsList = document.getElementById('albums-list');
 	makeSortable(albumsList, ids => run(async () => {
@@ -846,8 +762,166 @@ function renderMain() {
 		e.preventDefault();
 		run(async () => {
 			const { id } = await api('folders', { method: 'POST', body: { title: document.getElementById('folder-title').value } });
-			openFolders.add(id); // show the new folder's link straight away
+			location.hash = `folder/${id}`; // straight to its link and settings
+		});
+	});
+}
+
+/* Folder editor */
+
+function renderFolder(id) {
+	const f = folderOf(id);
+	if (!f) { location.hash = ''; return; }
+	const albums = S.albums.filter(a => a.folder_id === id);
+	document.title = `${f.title} · Admin`;
+
+	app.innerHTML = `
+		${header()}
+		<main class="admin">
+			<p><a class="btn-small" href="#">← All folders</a></p>
+
+			<h2 class="admin-h">Folder</h2>
+			<div class="album-cover">${coverChooser('folder', id, [f.cover_photo_id], f.cover_key, albums)}</div>
+			<form class="album-form" id="folder-form">
+				<label class="label" for="title">Name <small>(people you share it with see it on the cover)</small></label>
+				<input class="field" id="title" value="${esc(f.title)}" maxlength="120" required>
+				<div class="row-actions"><button class="btn-small" type="submit">Save name</button></div>
+			</form>
+
+			<h2 class="admin-h">Link <span class="folder-meta">${folderMeta(f, albums)}</span></h2>
+			<div class="folder-row link-row">
+				<input class="field link-field" readonly value="${esc(`${location.origin}/f/${f.token}`)}">
+				<div class="row-actions">
+					<button class="btn-small" data-copy>Copy link</button>
+					<button class="btn-small" data-qr="${esc(f.title)}">QR code</button>
+					<a class="btn-small" href="/f/${f.token}" target="_blank" rel="noopener">Open folder</a>
+					<button class="btn-small" data-act="relink" title="The old link stops working">New link</button>
+				</div>
+				<div class="folder-settings">
+					<span class="setting">Password: <b>${f.has_password ? 'on' : 'off'}</b>
+						<button type="button" class="link-btn" data-act="password">${f.has_password ? 'Change' : 'Set'}</button>
+						${f.has_password ? '<button type="button" class="link-btn" data-act="nopassword">Remove</button>' : ''}</span>
+					<label class="setting">Link works until
+						<input class="field date-field" type="date" data-setting="expires_at" value="${esc(f.expires_at || '')}">
+						${f.expires_at ? '<button type="button" class="link-btn" data-act="noexpiry">No expiry</button>' : ''}</label>
+					<label class="setting" title="Off hides the buttons and blocks the full-size originals; photos on screen can still be saved"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
+				</div>
+				${f.favorites ? `<details class="favorites" id="favorites">
+					<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
+					<div class="fav-list">Loading…</div>
+				</details>` : ''}
+			</div>
+
+			<h2 class="admin-h">Albums <span class="folder-meta">${plural(albums.length, 'album')}</span></h2>
+			<form class="inline-form" id="new-album">
+				<input class="field" id="album-title" placeholder="New album in this folder" maxlength="120" required>
+				<button class="btn-small" type="submit">+ New album</button>
+			</form>
+			<ul class="folder-list">
+				${albums.map(a => `
+					<li class="album-row no-grip">
+						<a class="album-thumb" href="#album/${a.id}">${a.cover ? `<img src="${img(a.cover, 't')}" alt="">` : ''}</a>
+						<div class="folder-info">
+							<a class="folder-name" href="#album/${a.id}">${esc(a.title)}</a>
+							<span class="folder-meta">${[a.date && esc(a.date), plural(a.count, 'photo'), plural(a.views, 'view'), plural(a.downloads, 'download'), a.downloads_off && 'downloads off'].filter(Boolean).join(' · ')}</span>
+						</div>
+						<div class="row-actions">
+							<a class="btn-small" href="#album/${a.id}">Edit</a>
+							<a class="btn-small" href="${albumUrl(a)}" target="_blank" rel="noopener">Open</a>
+						</div>
+					</li>`).join('') || '<li class="admin-hint">No albums yet. Add one, then upload photos into it. Existing albums move in from their own settings (Shown on).</li>'}
+			</ul>
+
+			<h2 class="admin-h">Danger zone</h2>
+			<button class="btn-small danger" data-act="delete">Delete folder</button>
+			<p class="admin-hint">Its albums and photos are kept: they become hidden albums.</p>
+		</main>`;
+
+	bindHeader();
+	bindCoverPickers();
+	bindLinks();
+
+	document.getElementById('folder-form').addEventListener('submit', e => {
+		e.preventDefault();
+		run(async () => {
+			await api(`folders/${id}`, { method: 'PATCH', body: { title: document.getElementById('title').value } });
+			toast('Saved');
 			await refresh();
+		});
+	});
+
+	document.getElementById('new-album').addEventListener('submit', e => {
+		e.preventDefault();
+		run(async () => {
+			const { id: albumId } = await api('albums', {
+				method: 'POST',
+				body: { title: document.getElementById('album-title').value, date: new Date().toISOString().slice(0, 10), folder_id: id, hidden: false },
+			});
+			S = await api('state');
+			location.hash = `album/${albumId}`; // straight to the upload area
+		});
+	});
+
+	app.querySelectorAll('[data-act]').forEach(btn => {
+		btn.onclick = () => run(async () => {
+			const act = btn.dataset.act;
+			if (act === 'relink') {
+				if (!confirm(`Make a new link for "${f.title}"? The old link stops working.`)) return;
+				await api(`folders/${id}`, { method: 'PATCH', body: { relink: true } });
+			}
+			if (act === 'delete') {
+				if (!confirm(`Delete folder "${f.title}"? Its albums become hidden (not deleted).`)) return;
+				await api(`folders/${id}`, { method: 'DELETE' });
+				location.hash = '';
+				return;
+			}
+			if (act === 'password') {
+				const password = prompt(`Password for "${f.title}" (at least 4 characters). Anyone who opened it with the old one must enter the new one.`);
+				if (password === null) return;
+				await api(`folders/${id}`, { method: 'PATCH', body: { password } });
+				toast('Password set');
+			}
+			if (act === 'nopassword') {
+				if (!confirm(`Remove the password? Anyone with the link can open "${f.title}" again.`)) return;
+				await api(`folders/${id}`, { method: 'PATCH', body: { password: null } });
+			}
+			if (act === 'noexpiry') await api(`folders/${id}`, { method: 'PATCH', body: { expires_at: null } });
+			await refresh();
+		});
+	});
+
+	// Expiry date and the downloads switch save as soon as they change.
+	app.querySelectorAll('[data-setting]').forEach(input => {
+		input.onchange = () => run(async () => {
+			const body = input.dataset.setting === 'downloads'
+				? { downloads_off: !input.checked }
+				: { expires_at: input.value || null };
+			await api(`folders/${id}`, { method: 'PATCH', body });
+			await refresh();
+			toast('Saved');
+		});
+	});
+
+	// Favourites load when opened: thumbnails with who picked them, and the file names to copy for editing.
+	const box = document.getElementById('favorites');
+	box?.addEventListener('toggle', () => {
+		if (!box.open || box.dataset.loaded) return;
+		box.dataset.loaded = '1';
+		run(async () => {
+			const { photos } = await api(`folders/${id}/favorites`);
+			box.querySelector('.fav-list').innerHTML = `
+				<div class="fav-grid">
+					${photos.map(p => `
+						<figure>
+							<img src="${img(p.key, 't')}" alt="" loading="lazy">
+							<figcaption>${esc(p.name)}<br><small>${esc(p.album)} · ${esc(p.clients)}</small></figcaption>
+						</figure>`).join('')}
+				</div>
+				<button type="button" class="btn-small" data-copy-names>Copy file names</button>`;
+			box.querySelector('[data-copy-names]').onclick = async e => {
+				const names = photos.map(p => p.name).join('\n');
+				try { await navigator.clipboard.writeText(names); e.target.textContent = 'Copied'; } catch { prompt('File names', names); }
+			};
 		});
 	});
 }
@@ -861,7 +935,7 @@ async function renderAlbum(id) {
 	app.innerHTML = `
 		${header()}
 		<main class="admin">
-			<p><a class="btn-small" href="#" id="back">← ${folderOf(a.folder_id) ? `Folder: ${esc(folderOf(a.folder_id).title)}` : 'All albums'}</a></p>
+			<p><a class="btn-small" href="${a.folder_id ? `#folder/${a.folder_id}` : '#'}" id="back">← ${folderOf(a.folder_id) ? `Folder: ${esc(folderOf(a.folder_id).title)}` : 'All albums'}</a></p>
 
 			<h2 class="admin-h">Album</h2>
 			<div class="album-cover" id="album-cover"></div>
@@ -908,10 +982,11 @@ async function renderAlbum(id) {
 		</main>`;
 
 	bindHeader();
-	// Back from an album in a folder reopens that folder on the main page.
-	document.getElementById('back').onclick = () => {
+	// Back from an album in a folder goes to that folder's page (as now chosen in Shown on).
+	document.getElementById('back').onclick = e => {
+		e.preventDefault();
 		const { folder_id } = parseWhere(document.getElementById('where').value);
-		if (folder_id) { openFolders.add(folder_id); scrollToFolder = folder_id; }
+		location.hash = folder_id ? `folder/${folder_id}` : '';
 	};
 	const grid = document.getElementById('photos');
 	let coverId = a.cover_photo_id || photos[0]?.id;
@@ -1275,14 +1350,23 @@ async function refresh() {
 
 // The main list always reloads its data, so covers, counts and photos changed in an album editor show at once.
 let fresh = false; // set by start(), which has just loaded the state
+let shownHash = null;
 function route() {
 	const m = location.hash.match(/^#album\/(\d+)$/);
+	const folder = location.hash.match(/^#folder\/(\d+)$/);
 	const justLoaded = fresh;
 	fresh = false;
+	// A new page starts at the top; a refresh of the same page keeps its place.
+	const scrollTop = location.hash !== shownHash;
+	shownHash = location.hash;
 	run(async () => {
-		if (m) return renderAlbum(Number(m[1]));
-		if (!justLoaded) S = await api('state');
-		renderMain();
+		if (m) await renderAlbum(Number(m[1]));
+		else {
+			if (!justLoaded) S = await api('state');
+			if (folder) renderFolder(Number(folder[1]));
+			else renderMain();
+		}
+		if (scrollTop) window.scrollTo(0, 0);
 	});
 }
 

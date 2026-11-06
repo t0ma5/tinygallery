@@ -92,15 +92,16 @@ easy downloads, and private album links you can share with anyone.
 - **Trash:** deleted photos and albums stay **7 days** and can be restored, then they are removed for good.
 - **Remove GPS location** from originals before upload (on by default): blanks the location in EXIF and XMP,
   keeps the date and everything else.
-- **Private folders** to share with clients, friends or family: an unguessable link (`/f/<12 random characters>`), collapsible list,
-  **New link** to revoke, optional **password**, **link expiry date**, a **QR code** (PNG to save or print),
+- **Private folders** to share with clients, friends or family: an unguessable link (`/f/<12 random characters>`), listed like
+  albums, each with its own page: its albums and **+ New album**, **New link** to revoke, optional **password**, **link expiry date**, a **QR code** (PNG to save or print),
   **when it was last opened**, and the **favourites** people picked (thumbnails, who picked them, and
   **Copy file names** for your editing software).
 - **Downloads switch** per album and per folder (on by default). Off hides the buttons and stops serving
   originals, so zoom stays at the display resolution.
 - **Views and downloads** per album, views and favourites per folder (your own visits are not counted).
 - **Cover photos:** up to 5 for the home page (one shown at random on each visit), one per folder and per album.
-  Every choice saves at once; the current album cover is marked in the photo grid.
+  Every choice saves at once; the current album cover is marked in the photo grid. Any photo can be a
+  cover: the chooser loads one album's photos at a time, only when opened, so the admin stays fast.
 - **Open** any photo in the album editor for a quick full-size preview (arrow keys to browse).
 - Search for albums and folders (ignores accents: "seinajoki" finds "Seinäjoki").
 - Site name setting, storage used (with on-demand recount) and photo count. A recount also removes files left by
