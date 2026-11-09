@@ -924,6 +924,11 @@ select.field { appearance: auto; }
 .setting b { color: var(--text); font-weight: 500; }
 .date-field { width: auto; padding: 4px 8px; font-size: 12px; color-scheme: dark; }
 
+.password-form { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.password-form[hidden] { display: none; }
+.password-form .field { width: auto; flex: 1 1 220px; max-width: 320px; margin: 0; }
+.password-form .check { margin: 0; }
+
 .favorites { grid-column: 1 / -1; }
 
 .favorites summary {

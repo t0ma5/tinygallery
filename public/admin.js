@@ -806,6 +806,13 @@ function renderFolder(id) {
 						${f.expires_at ? '<button type="button" class="link-btn" data-act="noexpiry">No expiry</button>' : ''}</label>
 					<label class="setting" title="Off hides the buttons and blocks the full-size originals; photos on screen can still be saved"><input type="checkbox" data-setting="downloads"${f.downloads_off ? '' : ' checked'}> Allow downloads</label>
 				</div>
+				<form class="password-form" id="password-form" hidden>
+					<input class="field" type="password" id="new-password" minlength="4" maxlength="100" autocomplete="new-password"
+						placeholder="New password, at least 4 characters" aria-label="New password" required>
+					<label class="check"><input type="checkbox" id="show-password"> Show</label>
+					<button class="btn-small" type="submit">Save password</button>
+					<button class="btn-small" type="button" id="password-cancel">Cancel</button>
+				</form>
 				${f.favorites ? `<details class="favorites" id="favorites">
 					<summary>${ICON.heart} ${plural(f.favorites, 'photo')} picked as favourites <small>Show</small></summary>
 					<div class="fav-list">Loading…</div>
@@ -876,10 +883,9 @@ function renderFolder(id) {
 				return;
 			}
 			if (act === 'password') {
-				const password = prompt(`Password for "${f.title}" (at least 4 characters). Anyone who opened it with the old one must enter the new one.`);
-				if (password === null) return;
-				await api(`folders/${id}`, { method: 'PATCH', body: { password } });
-				toast('Password set');
+				pwForm.hidden = false;
+				pwInput.focus();
+				return;
 			}
 			if (act === 'nopassword') {
 				if (!confirm(`Remove the password? Anyone with the link can open "${f.title}" again.`)) return;
@@ -889,6 +895,20 @@ function renderFolder(id) {
 			await refresh();
 		});
 	});
+
+	const pwForm = document.getElementById('password-form');
+	const pwInput = document.getElementById('new-password');
+	document.getElementById('show-password').onchange = e => { pwInput.type = e.target.checked ? 'text' : 'password'; };
+	document.getElementById('password-cancel').onclick = () => { pwForm.hidden = true; pwInput.value = ''; };
+	pwForm.onsubmit = e => {
+		e.preventDefault();
+		run(async () => {
+			if (f.has_password && !confirm(`Change the password of "${f.title}"? Anyone who opened it with the old one must enter the new one.`)) return;
+			await api(`folders/${id}`, { method: 'PATCH', body: { password: pwInput.value } });
+			toast('Password set');
+			await refresh();
+		});
+	};
 
 	// Expiry date and the downloads switch save as soon as they change.
 	app.querySelectorAll('[data-setting]').forEach(input => {
@@ -948,6 +968,7 @@ async function renderAlbum(id) {
 				${whereSelect('where', whereValue(a))}
 				<label class="check"><input type="checkbox" id="downloads"${a.downloads_off ? '' : ' checked'}> Allow downloads
 					<small>(off hides the buttons and blocks the full-size original and its zoom; photos on screen can still be saved)</small></label>
+				${folderOf(a.folder_id)?.downloads_off ? `<p class="admin-hint">Downloads are off for its folder "${esc(folderOf(a.folder_id).title)}", which blocks them here too.</p>` : ''}
 				<div class="row-actions">
 					<button class="btn-small" type="submit">Save details</button>
 					<a class="btn-small" href="${albumUrl(a)}" target="_blank" rel="noopener">Open album</a>
@@ -992,7 +1013,7 @@ async function renderAlbum(id) {
 	let coverId = a.cover_photo_id || photos[0]?.id;
 
 	const cell = p => `
-		<div class="photo-cell${p.id === coverId ? ' selected' : ''}" data-photo="${p.id}" data-id="${p.id}">
+		<div class="photo-cell${p.id === coverId ? ' selected' : ''}" data-id="${p.id}">
 			<img src="${img(p.key, 't')}" alt="" loading="lazy">
 			${gripHtml}
 			<span class="cover-badge">✓ Cover</span>
@@ -1096,7 +1117,7 @@ async function renderAlbum(id) {
 	grid.addEventListener('click', e => {
 		const c = e.target.closest('.photo-cell');
 		if (!c) return;
-		const photoId = Number(c.dataset.photo);
+		const photoId = Number(c.dataset.id);
 		if (grid.classList.contains('selecting')) {
 			if (e.target.closest('.drag-handle')) return;
 			c.classList.toggle('picked');
@@ -1109,7 +1130,6 @@ async function renderAlbum(id) {
 		// One photo goes to the trash without asking: it can be restored from the main page.
 		if (e.target.closest('[data-delete]')) run(async () => {
 			await api('photos/delete', { method: 'POST', body: { ids: [photoId] } });
-			S.photoCount--;
 			dropPhotos([photoId]);
 			toast('Moved to the trash');
 		});
@@ -1156,13 +1176,16 @@ async function renderAlbum(id) {
 	const PARALLEL = 3;
 	let busy = false;
 	async function upload(files) {
-		files = files.filter(f => /^image\//.test(f.type));
-		if (!files.length || busy) return;
+		files = files.filter(f => PHOTO_TYPES.test(f.type));
+		if (!files.length) return toast('Choose JPEG, PNG or WebP photos');
+		if (busy) {
+			input.value = '';
+			return toast('Wait for the current upload to finish, then add these');
+		}
 		busy = true;
 		uploading++;
 		const progress = document.getElementById('progress');
 		const here = () => grid.isConnected;
-		const before = inOrder().map(p => p.id);
 		const added = new Array(files.length); // by file position
 		const finishOrder = [];
 		const failed = [];
@@ -1197,10 +1220,11 @@ async function renderAlbum(id) {
 		};
 		try {
 			await Promise.all(Array.from({ length: Math.min(PARALLEL, files.length) }, worker));
-			// Parallel uploads finish in any order: put them back in the order the files were chosen.
+			// Parallel uploads finish in any order: put them back in the order the files were chosen, after the
+			// photos as they are now (including any drag made meanwhile). The server writes only rows that moved.
 			const wanted = added.filter(Boolean).map(p => p.id);
 			if (!stopped && wanted.join() !== finishOrder.join()) {
-				await saveOrder([...before, ...wanted]);
+				await saveOrder([...inOrder().map(p => p.id).filter(pid => !wanted.includes(pid)), ...wanted]);
 				if (here()) wanted.forEach(pid => grid.appendChild(grid.querySelector(`[data-id="${pid}"]`)));
 			}
 		} finally {
@@ -1218,6 +1242,9 @@ async function renderAlbum(id) {
 		drawCoverRow();
 	}
 }
+
+// Photo formats the server accepts (it refuses SVG and other non-photo images).
+const PHOTO_TYPES = /^image\/(jpeg|png|webp|avif|gif|heic|heif)$/;
 
 // Uploads in progress, so closing or reloading the tab asks first.
 let uploading = 0;

@@ -5,10 +5,11 @@ import {
 } from '../../lib/util.js';
 
 import { homeData, homeCoverPhotos, folderData, albumData, openFolder, siteName, ALBUM_SQL, ALBUM_ORDER } from '../../lib/data.js';
-import { TRASH_DAYS, trashPhotoStatements, trashAlbumStatements, runBatches, selectIn, restore, purge, trashKeys } from '../../lib/trash.js';
+import { TRASH_DAYS, trashPhotoStatements, trashAlbumStatements, runBatches, selectIn, restore, purge, trashKeys, filesOf } from '../../lib/trash.js';
 
 const MB = 1024 * 1024;
 const MAX_FAVORITES = 20000; // per folder, from all visitors together
+const MAX_CLIENT_FAVORITES = 1000; // per visitor in one folder
 
 export async function onRequest({ request, env, params, waitUntil }) {
 	const path = (params.path || []).join('/');
@@ -23,24 +24,25 @@ export async function onRequest({ request, env, params, waitUntil }) {
 		if (path === 'home') return json(await homeData(env));
 		m = path.match(/^f\/([A-Za-z0-9]{12})$/);
 		if (m) {
-			const data = await folderData(env, request, m[1]);
-			if (data && !data.locked && !data.expired) {
-				count(waitUntil, request, env, [['UPDATE folders SET views = views + 1, last_viewed_at = CURRENT_TIMESTAMP WHERE token = ?', m[1]]]);
+			// The admin may preview folders behind a password or past their expiry date; their visits are not counted.
+			const admin = await isAdmin(request, env);
+			const data = await folderData(env, request, m[1], admin);
+			if (data && !data.locked && !data.expired && !admin) {
+				count(waitUntil, env, [['UPDATE folders SET views = views + 1, last_viewed_at = CURRENT_TIMESTAMP WHERE token = ?', m[1]]]);
 			}
 			return page(data);
 		}
 		m = path.match(/^album\/([a-z0-9-]{1,80})$/);
 		if (m) {
 			const token = new URL(request.url).searchParams.get('f');
-			let data = await albumData(env, request, m[1], token);
-			if (data && !data.locked && !data.expired) {
+			// The admin may preview hidden albums, folder albums without a link and albums of locked folders.
+			const admin = await isAdmin(request, env);
+			const data = await albumData(env, request, m[1], token, admin);
+			if (data && !data.locked && !data.expired && !admin) {
 				const counts = [['UPDATE albums SET views = views + 1 WHERE slug = ?', m[1]]];
 				// An album opened straight from a folder link also counts as opening the folder.
 				if (data.back !== '/') counts.push(['UPDATE folders SET last_viewed_at = CURRENT_TIMESTAMP WHERE token = ?', token]);
-				count(waitUntil, request, env, counts);
-			} else if (!data) {
-				// The admin may preview hidden and folder albums without a link.
-				data = await albumData(env, request, m[1], token, await isAdmin(request, env));
+				count(waitUntil, env, counts);
 			}
 			return page(data);
 		}
@@ -59,13 +61,9 @@ function page(data) {
 	return json(data);
 }
 
-// View counters and "last opened", updated after the response; the admin's own visits do not count.
-// updates: [[sql, value], ...]
-function count(waitUntil, request, env, updates) {
-	waitUntil((async () => {
-		if (/(?:^|;\s*)session=/.test(request.headers.get('cookie') || '') && (await isAdmin(request, env))) return;
-		await env.DB.batch(updates.map(([sql, value]) => env.DB.prepare(sql).bind(value)));
-	})());
+// View counters and "last opened", updated after the response. updates: [[sql, value], ...]
+function count(waitUntil, env, updates) {
+	waitUntil(env.DB.batch(updates.map(([sql, value]) => env.DB.prepare(sql).bind(value))));
 }
 
 /* Private folder visitors */
@@ -74,14 +72,24 @@ async function unlockFolder(request, env, token) {
 	const open = await openFolder(env, request, token);
 	if (!open) return notFound();
 	if (open.status === 'expired') return json({ expired: true }, 410);
-	const ip = 'folder:' + (request.headers.get('cf-connecting-ip') || 'local');
+	// Counted per folder and IP: guests on one venue wifi or mobile network share an IP, and typos in one
+	// folder should not lock them out of the others.
+	const ip = `folder:${token}:${request.headers.get('cf-connecting-ip') || 'local'}`;
 	if (await tooManyAttempts(env, ip)) return fail('Too many attempts. Try again in 15 minutes.', 429);
 	const { password } = await request.json().catch(() => ({}));
-	if (!(await folderPasswordMatches(open.folder.password_hash, password))) {
+	if (!(await folderPasswordOk(open.folder.password_hash, password))) {
 		await recordFailedAttempt(env, ip);
 		return fail('Wrong password', 401);
 	}
 	return json({ ok: true }, 200, { 'set-cookie': await folderCookie(env, open.folder) });
+}
+
+// Passwords are saved trimmed; one set before that may have kept a space at either end, so the typed text
+// is also tried as typed (a second hash only when the visitor's input has spaces at the ends).
+async function folderPasswordOk(stored, password) {
+	if (typeof password !== 'string') return false;
+	const trimmed = password.trim();
+	return (await folderPasswordMatches(stored, trimmed)) || (trimmed !== password && (await folderPasswordMatches(stored, password)));
 }
 
 // Favourites: GET lists this client's photo keys, POST { client, key, on, name } sets one.
@@ -112,9 +120,13 @@ async function favorites(request, env, token) {
 	if (!photo) return notFound();
 	const who = typeof name === 'string' ? name.trim().slice(0, 60) || null : null;
 	if (on) {
-		// Anyone with the link can add favourites, so a folder has a ceiling against scripted spam.
-		const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM favorites WHERE folder_id = ?').bind(folderId).first();
-		if (n >= MAX_FAVORITES) return fail('This folder has reached its limit of favourites', 429);
+		// Anyone with the link can add favourites, so a folder has a ceiling against scripted spam. The folder total
+		// is a stored count (kept by triggers) and the visitor's own count uses an index, so neither reads many rows.
+		const { total, mine } = await env.DB.prepare(`SELECT
+			(SELECT favorite_count FROM folders WHERE id = ?1) AS total,
+			(SELECT COUNT(*) FROM favorites WHERE folder_id = ?1 AND client = ?2) AS mine`).bind(folderId, client).first();
+		if (total >= MAX_FAVORITES) return fail('This folder has reached its limit of favourites', 429);
+		if (mine >= MAX_CLIENT_FAVORITES) return fail(`You can pick up to ${MAX_CLIENT_FAVORITES} favourites`, 429);
 		await env.DB.batch([
 			env.DB.prepare('INSERT OR IGNORE INTO favorites (folder_id, photo_id, client, name) VALUES (?, ?, ?, ?)')
 				.bind(folderId, photo.id, client, who),
@@ -307,12 +319,13 @@ async function folderExists(env, folderId) {
 }
 
 // PUT { ids: [...] } in the new order: albums overall, or the photos of one album.
+// Rows already in their place are not written, so a drag rewrites only the rows between its start and end.
 async function setOrder(request, env, table, albumId) {
 	const { ids } = await request.json();
 	if (!Array.isArray(ids) || ids.length > 10000) return fail('Send ids');
-	const where = albumId ? ' AND album_id = ?' : '';
+	const where = albumId ? ' AND album_id = ?3' : '';
 	const statements = ids.map((rowId, i) =>
-		env.DB.prepare(`UPDATE ${table} SET sort = ? WHERE id = ?${where}`).bind(i + 1, Number(rowId), ...(albumId ? [albumId] : [])));
+		env.DB.prepare(`UPDATE ${table} SET sort = ?1 WHERE id = ?2 AND sort != ?1${where}`).bind(i + 1, Number(rowId), ...(albumId ? [albumId] : [])));
 	for (let i = 0; i < statements.length; i += 100) await env.DB.batch(statements.slice(i, i + 100));
 	return json({ ok: true });
 }
@@ -328,10 +341,21 @@ async function createAlbum(request, env) {
 	let slug = base;
 	for (let i = 2; await env.DB.prepare('SELECT 1 FROM albums WHERE slug = ?').bind(slug).first(); i++) slug = `${base}-${i}`;
 
-	const r = await env.DB.prepare('INSERT INTO albums (slug, title, date, folder_id, hidden) VALUES (?, ?, ?, ?, ?)')
-		.bind(slug, title, cleanDate(body.date), folderId, body.hidden ? 1 : 0).run();
-	return json({ id: r.meta.last_row_id, slug });
+	// Two creates with the same title at once (a double click) can both find the address free: the second
+	// one gets a random ending instead of failing.
+	for (let i = 0; ; i++) {
+		try {
+			const r = await env.DB.prepare('INSERT INTO albums (slug, title, date, folder_id, hidden) VALUES (?, ?, ?, ?, ?)')
+				.bind(slug, title, cleanDate(body.date), folderId, body.hidden ? 1 : 0).run();
+			return json({ id: r.meta.last_row_id, slug });
+		} catch (e) {
+			if (!isUnique(e) || i >= 3) throw e;
+			slug = `${base}-${randomToken(4).toLowerCase()}`;
+		}
+	}
 }
+
+const isUnique = e => /UNIQUE constraint/i.test(String(e?.message));
 
 async function getAlbum(env, id) {
 	const a = await env.DB.prepare(`${ALBUM_SQL} WHERE a.id = ?`).bind(id).first();
@@ -373,8 +397,6 @@ async function updateAlbum(request, env, id) {
 	await env.DB.batch(statements);
 	return json({ ok: true });
 }
-
-const filesOf = key => [`${key}/t`, `${key}/d`, `${key}/o`];
 
 // Deleted albums go to the trash with their photos; files are removed only when the trash is purged.
 async function deleteAlbum(env, id) {
@@ -426,6 +448,9 @@ async function photoIds(request) {
 
 const MAX_SIZE = { t: 4 * MB, d: 15 * MB, o: 80 * MB };
 
+// Raster photo formats only: an SVG "image" can carry script, and /img serves files from this site's address.
+const PHOTO_TYPES = /^image\/(jpeg|png|webp|avif|gif|heic|heif)$/;
+
 // SHA-256 of the chosen file, in hex, made in the browser.
 const cleanHash = v => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null);
 
@@ -445,7 +470,7 @@ async function putFile(request, env, key, size) {
 	if (await env.DB.prepare('SELECT 1 FROM photos WHERE key = ?').bind(key).first()) return fail('Key already used', 409);
 	const type = request.headers.get('content-type') || '';
 	const length = Number(request.headers.get('content-length'));
-	if (!/^image\//.test(type)) return fail('Send an image file');
+	if (!PHOTO_TYPES.test(type)) return fail('Send a photo (JPEG, PNG, WebP, AVIF, GIF or HEIC)');
 	if (!(length > 0)) return fail('Missing file size', 411);
 	if (length > MAX_SIZE[size]) return fail('File too large', 413);
 
@@ -469,10 +494,17 @@ async function finishUpload(request, env, albumId, key) {
 	const name = heads[2].customMetadata?.name || 'photo.jpg';
 	const taken = typeof taken_at === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(taken_at) ? taken_at : null;
 	const digest = cleanHash(hash);
-	const r = await env.DB.prepare(`INSERT INTO photos (album_id, key, name, w, h, taken_at, hash, sort)
-		VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM photos WHERE album_id = ?))`)
-		.bind(albumId, key, name, Math.round(w), Math.round(h), taken, digest, albumId).run();
-	return json({ id: r.meta.last_row_id, key, name, w, h, taken_at: taken, hash: digest });
+	try {
+		const r = await env.DB.prepare(`INSERT INTO photos (album_id, key, name, w, h, taken_at, hash, sort)
+			VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM photos WHERE album_id = ?))`)
+			.bind(albumId, key, name, Math.round(w), Math.round(h), taken, digest, albumId).run();
+		return json({ id: r.meta.last_row_id, key, name, w, h, taken_at: taken, hash: digest });
+	} catch (e) {
+		if (!isUnique(e)) throw e;
+		// The same finish sent twice (a retried request): the photo is already there, so answer as the first one did.
+		const p = await env.DB.prepare('SELECT id, key, name, w, h, taken_at, hash FROM photos WHERE key = ? AND album_id = ?').bind(key, albumId).first();
+		return p ? json(p) : fail('Key already used', 409);
+	}
 }
 
 async function createFolder(request, env) {
@@ -499,7 +531,8 @@ async function updateFolder(request, env, id) {
 		if (body.password === null) {
 			sets.push('password_hash = NULL');
 		} else {
-			const pw = typeof body.password === 'string' ? body.password : '';
+			// Trimmed, so a space copied along with the password does not lock clients out.
+			const pw = typeof body.password === 'string' ? body.password.trim() : '';
 			if (pw.length < 4 || pw.length > 100) return fail('Password must be 4 to 100 characters');
 			sets.push('password_hash = ?'); values.push(await hashFolderPassword(pw));
 		}

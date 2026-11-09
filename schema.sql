@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS folders (
 	downloads_off INTEGER NOT NULL DEFAULT 0,
 	views INTEGER NOT NULL DEFAULT 0,
 	last_viewed_at TEXT,
+	favorite_count INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -64,6 +65,8 @@ CREATE TABLE IF NOT EXISTS favorites (
 CREATE INDEX IF NOT EXISTS photos_album ON photos(album_id, sort, id);
 CREATE INDEX IF NOT EXISTS albums_folder ON albums(folder_id);
 CREATE INDEX IF NOT EXISTS photos_hash ON photos(album_id, hash);
+CREATE INDEX IF NOT EXISTS favorites_client ON favorites(folder_id, client);
+CREATE INDEX IF NOT EXISTS favorites_photo ON favorites(photo_id);
 
 -- albums.photo_count stays current through these, so pages never count photo rows.
 CREATE TRIGGER IF NOT EXISTS photos_count_insert AFTER INSERT ON photos BEGIN
@@ -75,6 +78,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS photos_count_move AFTER UPDATE OF album_id ON photos WHEN NEW.album_id IS NOT OLD.album_id BEGIN
 	UPDATE albums SET photo_count = photo_count - 1 WHERE id = OLD.album_id;
 	UPDATE albums SET photo_count = photo_count + 1 WHERE id = NEW.album_id;
+END;
+-- folders.favorite_count likewise, so the favourites ceiling never counts rows.
+CREATE TRIGGER IF NOT EXISTS favorites_count_insert AFTER INSERT ON favorites BEGIN
+	UPDATE folders SET favorite_count = favorite_count + 1 WHERE id = NEW.folder_id;
+END;
+CREATE TRIGGER IF NOT EXISTS favorites_count_delete AFTER DELETE ON favorites BEGIN
+	UPDATE folders SET favorite_count = favorite_count - 1 WHERE id = OLD.folder_id;
 END;
 
 -- Deleted photos and albums, kept 7 days with their files so they can be restored.

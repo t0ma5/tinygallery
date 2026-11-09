@@ -204,7 +204,7 @@ function favoritesFor(token) {
 function coverHtml(key, title = '', sub = '', button = true, back = '') {
 	return `
 		<section class="cover">
-			${key ? `<img src="${img(key, 'd')}" alt="">` : ''}
+			${key ? `<img src="${img(key, 'd')}" alt="" fetchpriority="high">` : ''}
 			${back ? `<a class="cover-back" href="${back}">${ICON.prev}<span>All albums</span></a>` : ''}
 			<div class="cover-center">
 				${title ? `<h1>${esc(title)}</h1>` : ''}
@@ -219,6 +219,17 @@ function coverHtml(key, title = '', sub = '', button = true, back = '') {
 
 function renderCollection(data, token) {
 	document.title = data.title ? `${data.title} · ${photographer}` : photographer;
+	// A folder link is often shared before its photos are uploaded.
+	if (!data.albums.length) {
+		app.innerHTML = `
+			<main class="notice">
+				<h1>${esc(data.title || photographer)}</h1>
+				<p>No photos here yet.<br>Check back soon.</p>
+			</main>
+			${footer()}`;
+		fadeIn(app);
+		return;
+	}
 	const base = token ? `/f/${token}/` : '/a/';
 	app.innerHTML = `
 		${coverHtml(data.cover, data.title || '', '', data.albums.length > 0)}
@@ -401,7 +412,8 @@ function renderAlbum(data, token) {
 			async function* files() {
 				for (const p of list) {
 					label.textContent = `${done + 1} / ${list.length}`;
-					const res = await fetch(download(p));
+					// Only the first file goes through the download counter: one ZIP counts as one download.
+					const res = await fetch(done ? img(p.key, 'o') : download(p));
 					if (!res.ok) throw new Error(`could not get ${p.name}`);
 					done++;
 					yield { name: unique(p.name || `${p.key}.jpg`), input: res };

@@ -30,6 +30,9 @@ export async function onRequestGet({ params, request, env, waitUntil }) {
 	obj.writeHttpMetadata(headers);
 	headers.set('etag', obj.httpEtag);
 	headers.set('cache-control', 'public, max-age=31536000, immutable');
+	// Files are served from the site's own address: never sniffed as another type, never run as a page.
+	headers.set('x-content-type-options', 'nosniff');
+	headers.set('content-security-policy', "default-src 'none'; sandbox");
 
 	if (download) {
 		// The database has the original file name, so downloads keep it even if R2 metadata is lost (copies, migrations).

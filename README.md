@@ -235,7 +235,7 @@ To remove the GitHub icon from the footer, delete the `REPO_URL` line in `wrangl
 Pull the new code, apply any new file in `migrations/` once, then deploy:
 
 ```bash
-npx wrangler d1 execute <database> --remote --file migrations/0003_counts_trash.sql
+npx wrangler d1 execute <database> --remote --file migrations/0004_favorites_index.sql
 npx wrangler pages deploy --project-name <name> --branch main
 ```
 
@@ -243,6 +243,8 @@ npx wrangler pages deploy --project-name <name> --branch main
   download switches.
 - `0003_counts_trash.sql` adds stored photo counts (so pages no longer read every photo row, which used up the
   free plan's daily database reads on big galleries), the trash, "last opened" for folders and duplicate detection.
+- `0004_favorites_index.sql` adds favourite indexes and a stored favourite count per folder (deleting photos and
+  tapping hearts no longer read the whole favourites table). Apply it before deploying this version.
 
 Apply them in order, each once. Back up first: `npx wrangler d1 export <database> --remote --output backup.sql`.
 
@@ -320,12 +322,12 @@ Download names come from the database, so they survive copies that drop R2 metad
   Tokens are 12 random base62 characters (about 71 bits). Use **New link** to revoke, or an expiry date.
   Folder pages send `X-Robots-Tag: noindex` and `Referrer-Policy: no-referrer`.
 - **Folder passwords** are stored as salted PBKDF2-SHA256 hashes (10,000 rounds, kept low to fit the free plan's
-  10 ms CPU per request; fine for gallery passwords, not for account passwords). Wrong tries share the
-  10-per-15-minutes limit per IP. The unlock cookie is HMAC-signed and tied to the current password.
+  10 ms CPU per request; fine for gallery passwords, not for account passwords). Each folder allows 5 wrong
+  tries per IP in 15 minutes (the admin login: also 5 per IP). The unlock cookie is HMAC-signed and tied to the current password.
 - **Downloads off** stops the buttons and the server refuses originals, but a determined visitor can still
   save the 2400 px display copy from the page. It is a courtesy, not copy protection.
 - **Favourites** use a random id stored in the visitor's browser; there are no visitor accounts. A folder takes at most
-  20,000 favourites in total, so a script with the link cannot fill the database.
+  20,000 favourites in total and 1,000 per visitor, so a script with the link cannot fill the database.
 - **Headers:** every page sends a Content-Security-Policy (scripts, styles, images and fonts from the site only) and
   refuses to be shown in frames on other sites (clickjacking).
 - **Photo files** live under 20-character random keys, so they cannot be enumerated.
